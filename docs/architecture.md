@@ -110,7 +110,18 @@ USB voice uses a ten-second firmware lease. The gateway renews it with `voice/pi
 | `POST /track` | Face positions in explicit `STACKCHAN_FACE_TRACKER_SOURCE=mac` mode; robot mode returns 409 |
 | `POST /say` | Loopback only. Speak `text` through the live voice session (opens a USB session when that is the link) without the wake word |
 
-**Face tracking.** The gateway captures 320×240 frames from the CoreS3, using quality-80 JPEG over USB or RGB565BE over HTTP, and feeds them to a local Swift/Apple Vision worker. The default capture ceiling is 4 Hz; actual throughput includes sensor, transport, and servo settling. The worker associates face rectangles across frames. Angular image-error corrections use an estimated camera field of view, tapered gain near center, and a small noise deadzone. Firmware validates measured capture pose, command revision, expiry, and single-use frame tokens before applying each correction. Tracking uses the fast spring profile and holds motor torque between frames. Renderer/camera mutual exclusion replaces a fixed tracking delay, and the CoreS3 runs at its rated 240 MHz. Conversation, touch, and manual-control preemption remain active. Setup: [gateway README](../gateway/README.md#face-tracking).
+**Face tracking.** The gateway captures 320×240 frames from the CoreS3, using
+quality-80 JPEG over USB or RGB565BE over HTTP, and feeds them to a local
+Swift/Apple Vision worker. The capture ceiling is 4 Hz; actual throughput
+includes sensor, transport, and motion checks. The worker associates face
+rectangles across frames. Angular corrections use an estimated camera field
+of view and tapered gain near center. V2 adds adaptive bearing filtering and
+center hysteresis. Firmware validates measured capture pose, command revision,
+expiry, and single-use frame tokens before applying corrections. Tracking
+uses bounded velocity and acceleration and holds motor torque between frames.
+Renderer/camera mutual exclusion replaces a fixed tracking delay, and the
+CoreS3 runs at its rated 240 MHz. Conversation, touch, and manual-control
+preemption remain active. Setup: [gateway README](../gateway/README.md#face-tracking).
 
 The robot-camera protocol uses these additional interfaces:
 

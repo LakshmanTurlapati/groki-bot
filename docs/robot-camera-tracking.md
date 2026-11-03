@@ -123,3 +123,18 @@ time, and measured capture pose. `capture_latency_ms` includes the complete
 acquisition and USB transfer; `detection_ms` is the subsequent Vision step.
 `STACKCHAN_CAMERA_FPS=4` is a ceiling. Actual updates also wait for the sensor
 and head to settle, so it is not a claim of four corrections per second.
+
+## Verification after USB/session review
+
+The combined source passed 1,004 gateway tests (one optional test skipped),
+13 Swift tests and a release build, and 48 firmware host tests with address
+and undefined-behavior sanitizers plus five speech-synthesis vowel checks.
+CoreS3 and camera-disabled StopWatch firmware builds passed with ESP-IDF
+5.5.4. CoreS3 retains 167,465 bytes of static D/IRAM for the heap, above the
+118,784-byte build floor.
+
+Additional regressions cover stale queued USB writes, heartbeat renewal during
+startup, single proxy shutdown, detector failure and explicit disabling over
+USB, conversation pauses, centered-axis holds during motion, and incremental
+parsing of long partial console lines. These review changes have not been
+flashed; the earlier live measurements do not validate this exact revision.
