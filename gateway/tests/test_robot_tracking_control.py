@@ -66,3 +66,24 @@ def test_filter_discards_old_target_history_on_a_pause_or_new_session():
     assert smooth.correction(0, .5, (0, 0), 5, "new")[0] == -15
     with pytest.raises(ValueError):
         smooth.correction(.5, .5, (float("nan"), 0), 6, "new")
+
+
+@pytest.mark.parametrize("true_fov", [45, 60, 80])
+def test_centering_reduces_persistent_offsets_with_servo_deadband(true_fov):
+    for target in (4.0, 18.0):
+        residuals = []
+        for smooth in (False, True):
+            control = SmoothRobotTrackingControl(RobotTrackingControl()) if smooth else RobotTrackingControl()
+            heading = 0.0
+            for i in range(12):
+                pixel = .5 + math.tan(math.radians(target - heading)) / (2 * math.tan(math.radians(true_fov / 2)))
+                delta, _ = (control.correction(pixel, .5, (heading, 0), i * .4, "session") if smooth
+                            else control.correction(pixel, .5))
+                # The independent plant models a 2-degree motion threshold
+                # and residual position error, rather than an ideal motor.
+                if abs(delta) > 2:
+                    heading += delta - math.copysign(.8, delta)
+            residuals.append(abs(target - heading))
+        # Lens uncertainty changes the attainable residual; require an
+        # improvement over the original controller across the tested range.
+        assert residuals[1] < residuals[0] * .9

@@ -115,7 +115,7 @@ class SmoothRobotTrackingControl:
             if self.holding[axis]:
                 corrections.append(0.0)
                 continue
-            error = math.copysign(max(0, abs(error) - deadzone), error)
-            gain = config.gain * (.78 + .22 * min(1, abs(error) / 10))
-            corrections.append(max(-maximum, min(maximum, gain * error)))
+            # Filtering and hysteresis already suppress center noise. Further
+            # tapering can make a persistent error too weak to move the servo.
+            corrections.append(max(-maximum, min(maximum, config.gain * error)))
         return tuple(corrections)
