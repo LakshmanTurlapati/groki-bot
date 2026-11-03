@@ -41,6 +41,12 @@ hysteresis further reduces small reversals. Filters reset on face loss,
 session changes, and gaps over 1.2 seconds; no target motion is extrapolated
 after observations stop.
 
+In v2, the configured gain applies directly outside hysteresis. The legacy
+deadzone subtraction and extra gain taper are omitted because they can make
+small persistent errors too weak to move the servo. Plant-model tests with
+a 2° movement threshold verify lower residuals than the legacy controller
+across 45°–80° lens assumptions; this is not a physical servo calibration.
+
 V2 brackets the retained frame with servo feedback and uses their midpoint
 as its estimated capture heading. Frames with more than 3° of bracketed
 movement are rejected. Feedback during automatic tracking must agree with
@@ -126,7 +132,7 @@ and head to settle, so it is not a claim of four corrections per second.
 
 ## Verification after USB/session review
 
-The combined source passed 1,004 gateway tests (one optional test skipped),
+The combined source passed 1,007 gateway tests (one optional test skipped),
 13 Swift tests and a release build, and 48 firmware host tests with address
 and undefined-behavior sanitizers plus five speech-synthesis vowel checks.
 CoreS3 and camera-disabled StopWatch firmware builds passed with ESP-IDF
