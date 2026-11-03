@@ -9,6 +9,7 @@
 //   3. 連結クリック: 隣接サンプル差の最大値が全振幅の 60% を超えない
 //
 // Usage: jtts_test_unit <units.jvox> [outdir]
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
