@@ -109,7 +109,7 @@ flowchart LR
 
 ## 3. 网关的安全默认值
 
-- Mac 控制（`STACKCHAN_MAC_CONTROL`）、给 Gemini 的设备工具（`STACKCHAN_GEMINI_DEVICE_TOOLS`）、USB 串口通道（`STACKCHAN_USB_TRANSPORT`）和交给 Grok Bot（`STACKCHAN_TOOL_BOT`）都是不设置就不开启。
+- Mac 控制（`STACKCHAN_MAC_CONTROL`）、给 Gemini 的设备工具（`STACKCHAN_GEMINI_DEVICE_TOOLS`）、USB 串口通道（`STACKCHAN_USB_TRANSPORT`）和交给 Grok Bot（`STACKCHAN_TOOL_BOT`）都是不设置就不开启。USB 串口在 `STACKCHAN_USB_VOICE=1`（或 `auto` 且没有 WebSocket 语音会话）时，还会承载与 Wi-Fi WebSocket 相同的 Opus 音频和 `hello` / `listen` / `tts` JSON；主机取消 USB 语音后，固件回到 Wi-Fi。本机 `POST /say`（仅 127.0.0.1）可以不说唤醒词直接开口。说明见 [gateway README](../gateway/README.md#usb-voice-no-wi-fi-path-to-the-gateway)。
 - 请设置 `STACKCHAN_TOKEN`：它保护机器人连接、`/capture` 和 `/debug/inject-text`。
 - 转发服务只绑定 127.0.0.1，从不接触 Grok 令牌。
 

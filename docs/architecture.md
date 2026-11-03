@@ -91,6 +91,10 @@ A wrong token is rejected with HTTP 401 (`ESP32 auth rejected` in the gateway lo
 
 **Audio.** Uplink: Opus, 16 kHz mono, 60 ms frames, as binary WebSocket messages. On the gateway the wake word detector (sherpa-onnx, runs locally) listens first; only after "Hi Grok" (or "Hey Groki" with `STACKCHAN_WAKE_PHRASE=hey groki`) is audio forwarded to Gemini, and the listening window closes after `STACKCHAN_WAKE_IDLE_S` seconds of silence. Downlink: Gemini's reply audio is encoded to Opus (24 kHz, 60 ms) and sent back with `tts` state messages so the robot knows when speech starts and stops.
 
+**USB voice.** The same Opus frames and the same JSON events (`hello`, `listen`, `tts`, `llm`, `led`, `head`) can ride the USB Serial/JTAG console instead of the WebSocket. `$MCP:` lines stay newline-delimited tool calls. Audio and voice JSON use a length-prefixed frame (`0xFF 0xFE`, version, type, length, payload, CRC-16/CCITT-FALSE) so a payload may contain newlines. The host signals `voice/mode` on a `$MCP:` line. The firmware switches the XiaoZhi client onto that link and falls back to the Wi-Fi WebSocket when the host clears the mode or the cable drops. The gateway builds the same per-connection voice proxy it builds for a WebSocket hello. `POST /say` on `127.0.0.1:8766` (loopback only) opens or reuses that session and speaks without the wake word.
+
+The device encoder is 24 kbit/s, so uplink is about 3 KiB/s. Downlink is the same 60 ms grid at 24 kHz. USB Serial/JTAG ignores the gateway's 115200 baud placeholder and runs at USB full-speed. The serial pipe is full duplex. The conversation state machine is half-duplex, the same as Wi-Fi: the microphone is off while the speaker plays. Setup and the `STACKCHAN_USB_VOICE` switch: [gateway README, USB voice](../gateway/README.md#usb-voice-no-wi-fi-path-to-the-gateway).
+
 **Gemini Live.** The gateway keeps one Gemini Live session (`GEMINI_API_KEY`, model `gemini-3.8-live`, voice `Kore` by default) and gives Gemini a small set of function-calling tools: `end_conversation`, `get_current_datetime`, `ask_claude` when the `claude` CLI is installed (`STACKCHAN_ASK_CLAUDE=0` turns it off), and, when you turn them on, Mac control tools and `ask_grokbot`. With `STACKCHAN_GEMINI_DEVICE_TOOLS=1` Gemini also gets `move_head`, `set_avatar`, `set_all_leds` and `express_emotion`; because the Groki Bot firmware has no MCP, the gateway sends these as the XiaoZhi messages `head` (firmware newer than v0.2.1), `llm` with an emotion, and `led`.
 
 **HTTP on port 8766.**
@@ -102,6 +106,7 @@ A wrong token is rejected with HTTP 401 (`ESP32 auth rejected` in the gateway lo
 | `POST /capture` | Photo upload from firmware that has a camera tool (needs `Authorization: Bearer` with `VISION_TOKEN` or `STACKCHAN_TOKEN`). Not used by the Groki Bot firmware. |
 | `POST /debug/inject-text` | Inject a text turn into the live session, token protected |
 | `POST /track` | Face positions from the Mac face tracker (see Face tracking below) |
+| `POST /say` | Loopback only. Speak `text` through the live voice session (opens a USB session when that is the link) without the wake word |
 
 **Face tracking.** On a Mac with a camera, the gateway starts [tools/vision-tracker](../tools/vision-tracker/README.md) (`groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8`) and restarts it if it exits. The tracker finds the most confident face in each frame with Apple Vision and posts `{"x", "y", "width", "height", "confidence", "timestamp"}` (0..1 image coordinates) at most 8 times a second. `TrackingBridge` maps the position to head angles, smooths them, and sends them at up to 50 Hz as the XiaoZhi control message `{"type": "head", "yaw": <-90..90>, "pitch": <0..60>, "speed": <100..1000>}`, because the Groki Bot firmware has no MCP. The firmware clamps the angles to its servo limits and, while the robot is speaking, keeps only the last command and applies it when the reply ends. The gateway sends no head moves while the robot speaks or listens after the wake word; "look at me" / "stop looking at me" (`self.tracking.start` / `self.tracking.stop`) switch following on and off. `/debug/status` shows the state under `face_tracking`. Setup: [gateway README, Face tracking](../gateway/README.md#face-tracking).
 
@@ -187,6 +192,7 @@ curl -sN -X POST http://127.0.0.1:18770/send \
 | Part | Where |
 |---|---|
 | Firmware conversation clients | `components/conversation/` (`xiaozhi_client.cpp`, `gemini_live_client.cpp`, `openai_realtime_client.cpp`) |
+| USB voice frames and the serial service | `components/conversation/usb_voice_framer.cpp`, `usb_voice_port.cpp`, `main/usb_voice_service.cpp`; gateway `usb_voice_framer.py`, `usb_voice.py` |
 | Firmware settings (BLE, Wi-Fi, OTA, `/mcp/*` HTTP API) | `components/config_service/`, `components/wifi_config_service/` |
 | Gateway WebSocket server and XiaoZhi protocol | `gateway/stackchan_mcp/server.py`, `protocol.py`, `esp32_client.py` |
 | Wake word | `gateway/stackchan_mcp/wake_gate.py` |

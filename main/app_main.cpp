@@ -35,6 +35,7 @@
 #include <wifi_config_service/wifi_config_service.hpp>
 #if CONFIG_STACKCHAN_CONVERSATION_ENABLED
 #include "conversation_task.hpp"
+#include "usb_voice_service.hpp"
 #endif
 #include "camera_service.hpp"
 #include "demo_loop.hpp"
@@ -884,6 +885,9 @@ extern "C" void app_main()
     // PCM ring stack at compile time.
 #if CONFIG_STACKCHAN_CONVERSATION_ENABLED
     if (!espnow_mode) {
+        // Reader first, so a host voice/mode signal is not missed while the
+        // conversation task is still waiting for Wi-Fi.
+        stackchan::app::start_usb_voice_service();
         stackchan::app::start_conversation_task(*g_conversation_args);
     }
 #else

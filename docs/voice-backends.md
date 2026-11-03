@@ -43,6 +43,8 @@ Use this if you want the robot's voice to run through your computer, for example
    - Click "保存并重启" (Save and restart).
 4. Check <http://127.0.0.1:8766/debug/status> on the computer: `"device": {"connected": true}`. Say "Hi Grok". To use "Hey Groki" as the wake word instead, set `STACKCHAN_WAKE_PHRASE=hey groki` in `gateway/.env` and restart the gateway.
 
+If the robot is plugged in over USB and cannot reach the computer over Wi-Fi, turn on `STACKCHAN_USB_TRANSPORT=1` and `STACKCHAN_USB_VOICE=1`. The gateway then carries the same Opus audio and `tts` / `listen` events over the serial port. `POST http://127.0.0.1:8766/say` speaks without the wake word. Details and flash steps: [gateway README, USB voice](../gateway/README.md#usb-voice-no-wi-fi-path-to-the-gateway).
+
 What path 2 does and does not do with this firmware: the gateway handles voice conversation, and on a Mac with a camera it turns the robot's head to follow your face ([Face tracking](../gateway/README.md#face-tracking)). Head, LED and camera control from Claude through the gateway's MCP tools does **not** reach this firmware, because its XiaoZhi client announces `features.mcp=false` in its hello message ([components/conversation/xiaozhi_client.cpp](../components/conversation/xiaozhi_client.cpp)) and does not handle MCP requests from the server. Face tracking uses the XiaoZhi `head` message instead, which the firmware handles. The shared gateway voice head, face and LED tools (off by default; `STACKCHAN_GEMINI_DEVICE_TOOLS=1`) also reach the firmware this way: `move_head` as a `head` message (firmware newer than v0.2.1), faces as emotion messages and LED colours as `led` messages. Camera tools do not work with this firmware.
 
 ### Path 3: firmware + gateway + Grok Bot

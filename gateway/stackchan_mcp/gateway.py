@@ -32,6 +32,7 @@ from .touch_bridge import TouchEventBridge
 from .tracking_bridge import TrackingBridge
 from .tts import synthesize_and_send
 from .usb_transport import UsbTransport
+from .usb_voice import UsbVoiceSession
 from .voice_input_bridge import VoiceInputBridge
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,10 @@ class Gateway:
         # TrackingBridge / hooks / Gemini function calls send set_head_angles
         # through here at ~10 ms instead of ~240 ms over WS.
         # Opt-in with STACKCHAN_USB_TRANSPORT=1: it opens /dev/cu.usbmodem*
-        # exclusively, which blocks flashing and serial monitors, and the
-        # Groki Bot firmware does not speak this USB protocol.
+        # exclusively, which blocks flashing and serial monitors.
+        # Tool calls stay line-based `$MCP:`. With the cable up and no
+        # WebSocket voice session, USB voice mode carries the same Opus
+        # frames and tts/listen JSON the WebSocket does.
         # STACKCHAN_USB_DISABLE=1 still forces it off.
         self.usb_transport: UsbTransport | None
         usb_enabled = os.getenv("STACKCHAN_USB_TRANSPORT", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -113,6 +116,7 @@ class Gateway:
             usb_transport=self.usb_transport,
             local_tool_handler=self._handle_external_local_tool,
         )
+        self.usb_voice = UsbVoiceSession(self.esp32, self.usb_transport)
         self.demo_reactions = DemoReactions(
             self.esp32,
             usb_transport=self.usb_transport,
@@ -230,8 +234,7 @@ class Gateway:
         text = str(arguments.get("text") or "").strip()
         if not text:
             return {"ok": False, "error": "text is required"}
-        connection = getattr(self.esp32, "connection", None)
-        proxy = getattr(connection, "cloud_proxy", None)
+        proxy = await self._ensure_speak_proxy()
         speak = getattr(proxy, "speak_text", None)
         if speak is None:
             return {"ok": False, "error": "no active gemini voice session"}
@@ -279,6 +282,48 @@ class Gateway:
             on_device_state=self.idle_gate.notify_device_state,
             set_face_tracking=self._set_face_tracking_from_voice,
         )
+
+    def _peer_is_loopback(self, remote: str | None) -> bool:
+        if not remote:
+            return False
+        host = remote.split("%", 1)[0]
+        if host.startswith("::ffff:"):
+            host = host[7:]
+        return host in {"127.0.0.1", "::1", "localhost"}
+
+    async def _handle_say(self, request: web.Request) -> web.Response:
+        """Local-only proactive speech. Opens or reuses the voice session.
+
+        Bound on the capture server but rejected unless the peer is loopback,
+        so a notifier on this computer can POST /say without the wake word.
+        The body is ``{"text": "...", "emotion": "..."}`` and the speak path
+        is ``_gemini_say`` → ``cloud_proxy.speak_text``.
+        """
+        if not self._peer_is_loopback(request.remote):
+            return web.json_response({"ok": False, "error": "local only"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+        result = await self._gemini_say(body)
+        return web.json_response(result, status=200 if result.get("ok") else 409)
+
+    async def _ensure_speak_proxy(self):
+        """Reuse the live voice proxy, or open a USB one when that is the link."""
+        connection = getattr(self.esp32, "connection", None)
+        proxy = getattr(connection, "cloud_proxy", None) if connection is not None else None
+        if getattr(proxy, "speak_text", None) is not None:
+            if getattr(proxy, "connected", True) is False:
+                ensure = getattr(proxy, "ensure_connected", None)
+                if ensure is not None:
+                    await ensure()
+            return proxy
+        session = getattr(self, "usb_voice", None)
+        if session is None:
+            return None
+        return await session.ensure_session()
 
     async def _set_face_tracking_from_voice(self, enabled: bool) -> dict:
         return await self._handle_external_local_tool("set_face_tracking", {"enabled": enabled})
@@ -360,6 +405,7 @@ class Gateway:
                 "Stop the gateway or unset STACKCHAN_USB_TRANSPORT before "
                 "running idf.py flash / monitor / screen.",
             )
+        self.usb_voice.start()
 
         await self.idle_gate.start()
 
@@ -369,6 +415,7 @@ class Gateway:
             capture_token=self.vision_token,
             inject_text_handler=self._inject_debug_text,
         )
+        app.router.add_post("/say", self._handle_say)
         app.router.add_post("/track", self._handle_track)
         app.router.add_post("/demo/intro", self._handle_demo_intro)
         app.router.add_get("/demo/intro", self._handle_demo_intro)
@@ -549,6 +596,7 @@ class Gateway:
         await self.idle_behavior.stop()
         await self.tracking_bridge.stop()
         await self.touch_bridge.stop()
+        await self.usb_voice.stop()
         if self.usb_transport is not None:
             await self.usb_transport.stop()
         await self.esp32.stop()

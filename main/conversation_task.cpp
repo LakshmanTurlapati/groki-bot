@@ -29,6 +29,7 @@
 #include "conversation/head_command.hpp"
 #include "conversation/metrics.hpp"
 #include "conversation/openai_realtime_client.hpp"
+#include "conversation/usb_voice_port.hpp"
 #include "conversation/xiaozhi_client.hpp"
 #include "led_runtime.hpp"
 #include "utf8.hpp"
@@ -252,12 +253,23 @@ public:
             return;
         }
 
-        ESP_LOGI(kTag, "waiting for Wi-Fi...");
         state_.conv.status.store(ConvStatus::WaitingWifi, std::memory_order_relaxed);
-        while (!wifi_is_connected()) {
-            vTaskDelay(pdMS_TO_TICKS(500));
+        if (provider_ == config::Provider::XiaoZhi) {
+            // Wi-Fi WebSocket is the normal path. USB voice (host sent
+            // voice/mode on the serial link) lets the same client start when
+            // the gateway is not reachable over the network.
+            ESP_LOGI(kTag, "waiting for Wi-Fi or USB voice...");
+            while (!wifi_is_connected() && !conv::usb_voice_requested()) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+        } else {
+            ESP_LOGI(kTag, "waiting for Wi-Fi...");
+            while (!wifi_is_connected()) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
         }
-        ESP_LOGI(kTag, "Wi-Fi up, starting %s conversation", provider_name());
+        ESP_LOGI(kTag, "starting %s conversation (%s)", provider_name(),
+                 (provider_ == config::Provider::XiaoZhi && conv::usb_voice_requested()) ? "usb" : "wifi");
 
         event_queue_ = xQueueCreate(32, sizeof(conv::ConversationEvent*));
         mic_buf_[0].resize(mic_chunk_samples_);
@@ -283,7 +295,9 @@ public:
         if (provider_ == config::Provider::Gemini) {
             client_ = std::make_unique<conv::GeminiLiveClient>(api_key_);
         } else if (provider_ == config::Provider::XiaoZhi) {
-            client_ = std::make_unique<conv::XiaoZhiClient>(xiaozhi_url_, xiaozhi_token_);
+            auto xiaozhi = std::make_unique<conv::XiaoZhiClient>(xiaozhi_url_, xiaozhi_token_);
+            xiaozhi_ = xiaozhi.get();
+            client_ = std::move(xiaozhi);
         } else {
             client_ = std::make_unique<conv::OpenAiRealtimeClient>(api_key_);
         }
@@ -332,6 +346,7 @@ public:
             }
             drain_events();
             service_state();
+            follow_voice_transport();
         }
     }
 
@@ -407,7 +422,13 @@ private:
         config_ = cfg;
 
         set_local(Local::Init);
+        if (xiaozhi_ != nullptr) {
+            xiaozhi_->set_usb_transport(conv::usb_voice_requested());
+        }
         auto r = client_->start(config_);
+        if (r && xiaozhi_ != nullptr) {
+            usb_active_ = conv::usb_voice_requested();
+        }
         if (!r) {
             ESP_LOGE(kTag, "client start failed: %d", static_cast<int>(r.error()));
             return false;
@@ -417,6 +438,9 @@ private:
 
     bool wait_for_wifi_for_reconnect(bool allow_audio_abort)
     {
+        if (provider_ == config::Provider::XiaoZhi && conv::usb_voice_requested()) {
+            return true;
+        }
         if (wifi_is_connected()) {
             return true;
         }
@@ -566,6 +590,30 @@ private:
         assistant_text_.clear();
         if (state_.audio_stream_active.load(std::memory_order_acquire)) return;
         (void)connect_with_retries("reconnect after an error", /*allow_audio_abort=*/true);
+    }
+
+    // Host voice/mode changed. Stop the live client and start it again on the
+    // other link. Wi-Fi stays the path whenever USB voice is not requested,
+    // including after the cable drops.
+    void follow_voice_transport()
+    {
+        if (xiaozhi_ == nullptr || local_ == Local::Yielded) {
+            return;
+        }
+        if (conv::usb_voice_requested() == usb_active_) {
+            return;
+        }
+        ESP_LOGI(kTag, "voice link -> %s", conv::usb_voice_requested() ? "usb" : "websocket");
+        if (local_ == Local::Speaking) {
+            M5.Speaker.end();
+            vTaskDelay(kI2sSettle);
+        }
+        state_.face.mouth_open.store(0.0f, std::memory_order_relaxed);
+        client_->stop();
+        flush_events();
+        assistant_pcm_.clear();
+        assistant_text_.clear();
+        (void)connect_with_retries("voice transport switch", /*allow_audio_abort=*/true);
     }
 
     // ---- per-state servicing ----------------------------------------------
@@ -1285,6 +1333,8 @@ private:
     conv::HeadCommandQueue head_commands_;
     conv::ConversationConfig config_{};
     std::unique_ptr<conv::ConversationService> client_;
+    conv::XiaoZhiClient* xiaozhi_{nullptr};
+    bool usb_active_{false};
     QueueHandle_t event_queue_{nullptr};
 
     // Per-provider audio rates set in the constructor.

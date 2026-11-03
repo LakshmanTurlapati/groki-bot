@@ -12,9 +12,16 @@ asyncio loop via run_coroutine_threadsafe, and call_tool() awaits the
 response future keyed on the JSON-RPC id.
 
 The reader thread also implements hot-plug recovery: when the device
-disconnects (USB cable yanked, firmware reboot), Serial.readline raises
+disconnects (USB cable yanked, firmware reboot), Serial.read raises
 SerialException, the thread loops back to discovery, and start()'s
 connected event reflects the live state.
+
+Voice audio shares this byte stream. `$MCP:` lines stay newline-delimited.
+Opus frames and XiaoZhi JSON (hello, listen, tts) use the length-prefixed
+frames in ``usb_voice_framer``. The 115200 baud value is a pyserial
+placeholder: the ESP32-S3 USB Serial/JTAG controller ignores it and runs
+at USB full-speed, which covers 16 kHz / 24 kHz 60 ms Opus. The firmware
+conversation remains half-duplex (no mic uplink while the speaker plays).
 """
 
 from __future__ import annotations
@@ -30,6 +37,8 @@ from typing import Any
 
 import serial
 from serial.tools import list_ports
+
+from .usb_voice_framer import UsbVoiceFrame, UsbVoiceLine, UsbVoiceStreamParser
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +119,7 @@ class UsbTransport:
         self._send_lock: asyncio.Lock | None = None
         self._connected_event: asyncio.Event | None = None
         self._log_file: Any | None = None
+        self._voice_handlers: list[Any] = []
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -211,6 +221,39 @@ class UsbTransport:
         self._raise_if_error(data)
         return data
 
+    async def set_voice_mode(self, enable: bool, *, timeout_s: float = 3.0) -> dict[str, Any]:
+        """Ask the device to carry XiaoZhi voice on this serial link.
+
+        ``enable=False`` returns the device to the Wi-Fi WebSocket. The
+        response is a normal ``$MCP:`` JSON-RPC result; audio itself is not
+        carried in that line.
+        """
+        data = await self._send_rpc(
+            {
+                "method": "voice/mode",
+                "params": {
+                    "enable": bool(enable),
+                    "audio": {
+                        "format": "opus",
+                        "sample_rate": 16000,
+                        "channels": 1,
+                        "frame_duration": 60,
+                    },
+                },
+            },
+            timeout_s=timeout_s,
+        )
+        self._raise_if_error(data)
+        return data
+
+    def add_voice_frame_handler(self, handler: Any) -> None:
+        """Register ``handler(UsbVoiceFrame)`` called on the asyncio loop."""
+        self._voice_handlers.append(handler)
+
+    async def write_raw(self, data: bytes) -> None:
+        """Write already-framed bytes. Shares the send lock with JSON-RPC lines."""
+        await self._write_locked(data)
+
     @staticmethod
     def _raise_if_error(data: dict[str, Any]) -> None:
         err = data.get("error") if isinstance(data, dict) else None
@@ -238,11 +281,7 @@ class UsbTransport:
         fut = self._loop.create_future()
         self._pending[rid] = fut
         try:
-            async with self._send_lock:
-                ser = self._serial
-                if ser is None or not self.connected:
-                    raise RuntimeError("USB transport not connected")
-                await asyncio.to_thread(ser.write, frame.encode("utf-8"))
+            await self._write_locked(frame.encode("utf-8"))
             return await asyncio.wait_for(fut, timeout=timeout_s)
         except asyncio.TimeoutError:
             self._pending.pop(rid, None)
@@ -250,6 +289,15 @@ class UsbTransport:
         except Exception:
             self._pending.pop(rid, None)
             raise
+
+    async def _write_locked(self, data: bytes) -> None:
+        if self._loop is None or self._send_lock is None:
+            raise RuntimeError("UsbTransport.start() not awaited yet")
+        async with self._send_lock:
+            ser = self._serial
+            if ser is None or not self.connected:
+                raise RuntimeError("USB transport not connected")
+            await asyncio.to_thread(ser.write, data)
 
     # ------------------------------------------------------------------ reader
 
@@ -294,20 +342,21 @@ class UsbTransport:
             self._sleep_or_stop(self._reconnect_delay)
 
     def _read_until_eof(self, ser: Any) -> None:
+        # Byte-oriented. readline() would split an Opus frame on an embedded
+        # newline and could swallow the next `$MCP:` line with it.
+        parser = UsbVoiceStreamParser()
         while not self._stop_flag.is_set():
-            line = ser.readline()
-            if not line:
+            chunk = ser.read(512)
+            if not chunk:
                 continue
-            try:
-                text = line.decode("utf-8", errors="replace").rstrip("\r\n")
-            except Exception:
-                continue
-            if not text:
-                continue
-            if text.startswith(MCP_PREFIX):
-                self._dispatch_response_line(text)
-            else:
-                self._append_log(text)
+            for event in parser.feed(chunk):
+                if isinstance(event, UsbVoiceLine):
+                    if event.text.startswith(MCP_PREFIX):
+                        self._dispatch_response_line(event.text)
+                    else:
+                        self._append_log(event.text)
+                elif isinstance(event, UsbVoiceFrame):
+                    self._dispatch_voice_frame(event)
 
     def _dispatch_response_line(self, line: str) -> None:
         payload = line[len(MCP_PREFIX):].lstrip()
@@ -323,6 +372,20 @@ class UsbTransport:
         if loop is None:
             return
         loop.call_soon_threadsafe(self._resolve_pending, rid, data)
+
+    def _dispatch_voice_frame(self, frame: UsbVoiceFrame) -> None:
+        loop = self._loop
+        if loop is None or not self._voice_handlers:
+            return
+        handlers = list(self._voice_handlers)
+        loop.call_soon_threadsafe(self._emit_voice_frame, handlers, frame)
+
+    def _emit_voice_frame(self, handlers: list[Any], frame: UsbVoiceFrame) -> None:
+        for handler in handlers:
+            try:
+                handler(frame)
+            except Exception:
+                logger.exception("USB voice frame handler failed")
 
     def _resolve_pending(self, rid: int, data: dict[str, Any]) -> None:
         fut = self._pending.pop(rid, None)

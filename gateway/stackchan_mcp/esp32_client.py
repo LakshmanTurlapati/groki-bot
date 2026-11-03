@@ -68,6 +68,8 @@ class ESP32Connection:
         # a connection built outside the hello handshake (as in tests)
         # keeps the historical "assume full MCP" behaviour.
         self.mcp_supported: bool = True
+        # "websocket" for a Wi-Fi client, "usb" for a serial voice session.
+        self.transport: str = "websocket"
 
     @property
     def connected(self) -> bool:
@@ -378,9 +380,101 @@ class ESP32Manager:
         """
         return self._tts_lock
 
+    def _websocket_voice_active(self) -> bool:
+        conn = self._connection
+        return (
+            conn is not None
+            and conn.connected
+            and getattr(conn, "transport", "websocket") != "usb"
+        )
+
+    async def begin_usb_voice(
+        self,
+        *,
+        sender: Any,
+        hello: dict[str, Any],
+        device_id: str,
+    ) -> ESP32Connection | None:
+        """Create the per-connection voice proxy the WebSocket hello path creates.
+
+        Returns None when a live Wi-Fi voice session already owns the device,
+        so USB voice does not replace a working WebSocket.
+        """
+        if self._websocket_voice_active():
+            return None
+        session_id = str(uuid.uuid4())
+        connection = ESP32Connection(sender, session_id)
+        connection.transport = "usb"
+        connection.device_id = device_id or "usb"
+        features = hello.get("features") if isinstance(hello, dict) else None
+        if isinstance(features, dict):
+            connection.mcp_supported = bool(features.get("mcp"))
+        else:
+            connection.mcp_supported = False
+        try:
+            connection.protocol_version = int(hello.get("version", 1))
+        except (TypeError, ValueError):
+            connection.protocol_version = 1
+
+        proxy = self._cloud_proxy_factory()
+        connection.cloud_proxy = proxy
+        info = CloudConnectionInfo(
+            device_id=connection.device_id,
+            protocol_version=str(connection.protocol_version),
+        )
+        try:
+            if proxy is not None:
+                await proxy.start(info, hello, sender.send)
+            resp = HelloResponse(session_id=session_id, transport="usb")
+            await sender.send(resp.model_dump_json())
+        except Exception:
+            logger.exception("USB voice session failed to start")
+            if proxy is not None:
+                stop = getattr(proxy, "stop", None)
+                if stop is not None:
+                    await stop()
+            connection.disconnect()
+            return None
+
+        async with self._lock:
+            if self._websocket_voice_active():
+                if proxy is not None:
+                    stop = getattr(proxy, "stop", None)
+                    if stop is not None:
+                        await stop()
+                connection.disconnect()
+                return None
+            self._connection = connection
+            self._debug_status.on_device_connected(connection.device_id)
+        if not connection.mcp_supported:
+            logger.info("USB voice ready (voice-only): device=%s", connection.device_id)
+        return connection
+
+    def release_connection(self, connection: ESP32Connection) -> None:
+        """Drop ``connection`` if it is still the current device."""
+        if self._connection is not connection:
+            return
+        self._connection = None
+        self._debug_status.on_device_disconnected()
+        self._debug_status.on_tts_state(False, source="local")
+        self._debug_status.on_tts_state(False, source="device")
+
+    def observe_device_message(self, message: dict[str, Any]) -> None:
+        """Apply listen/tts state from a USB voice JSON frame."""
+        if self._connection is None:
+            return
+        self._observe_device_state(message)
+
     def get_status_with_transports(self) -> dict[str, Any]:
         """Get status for callers that can use either WebSocket or USB."""
         status = dict(self.get_status())
+        conn = self._connection
+        if conn is not None and conn.connected and getattr(conn, "transport", "websocket") == "usb":
+            status["connected"] = True
+            status["ws_connected"] = False
+            status["usb_connected"] = True
+            status["transport"] = "usb"
+            return status
         ws_connected = bool(status.get("connected"))
         usb_connected = self.usb_connected
         status["ws_connected"] = ws_connected

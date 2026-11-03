@@ -27,6 +27,7 @@
 #include "esp_opus_dec.h"
 #include "esp_opus_enc.h"
 #include "conversation/control_dispatch.hpp"
+#include "conversation/usb_voice_port.hpp"
 #include "psram_allocator.hpp"
 #include "ws_extra_headers.hpp"
 
@@ -97,20 +98,30 @@ void resample_into(const std::int16_t* src, std::size_t n,
 
 } // namespace
 
-class XiaoZhiClient::Impl {
+class XiaoZhiClient::Impl : public UsbVoiceSink {
 public:
     Impl(std::string url, std::string token)
         : url_{std::move(url)}, token_{std::move(token)}
     {
     }
 
+    void set_usb_transport(bool enabled)
+    {
+        // Applied on the next start(). Switching a live session is the
+        // conversation task's job (stop, then start again).
+        if (!running_) {
+            usb_transport_ = enabled;
+        }
+    }
+
     ~Impl() { teardown(); }
 
     tl::expected<void, ConversationError> start(const ConversationConfig& config)
     {
-        if (client_ != nullptr) {
+        if (running_) {
             return tl::unexpected{ConversationError::InvalidState};
         }
+        running_ = true;
         config_ = config;
         tx_evicted_total_.store(0, std::memory_order_relaxed);
         last_evict_log_ms_ = 0;
@@ -142,6 +153,7 @@ public:
         const std::size_t rx_cap = static_cast<std::size_t>(CONFIG_STACKCHAN_CONV_WS_RX_BUFFER);
         rx_buffer_ = static_cast<std::uint8_t*>(heap_caps_malloc(rx_cap, MALLOC_CAP_SPIRAM));
         if (rx_buffer_ == nullptr) {
+            teardown();
             return tl::unexpected{ConversationError::OutOfMemory};
         }
         rx_capacity_ = rx_cap;
@@ -154,15 +166,6 @@ public:
             teardown();
             return tl::unexpected{ConversationError::TransportInit};
         }
-
-        client_ = esp_websocket_client_init(&cfg);
-        if (client_ == nullptr) {
-            teardown();
-            return tl::unexpected{ConversationError::TransportInit};
-        }
-        apply_extra_ws_headers(client_, config_.extra_headers);
-        esp_websocket_register_events(client_, WEBSOCKET_EVENT_ANY,
-                                      &Impl::websocket_event_trampoline, this);
 
         hello_received_ = false;
         session_id_.clear();
@@ -182,6 +185,24 @@ public:
             teardown();
             return tl::unexpected{ConversationError::TransportInit};
         }
+
+        // USB voice: the host already signaled voice/mode. Skip the WebSocket
+        // so a robot that cannot reach the gateway over Wi-Fi still streams
+        // the same Opus frames and hello/listen/tts JSON over the serial link.
+        if (usb_transport_) {
+            ESP_LOGI(kTag, "voice transport: usb");
+            usb_voice_bind_sink(this);
+            return {};
+        }
+
+        client_ = esp_websocket_client_init(&cfg);
+        if (client_ == nullptr) {
+            teardown();
+            return tl::unexpected{ConversationError::TransportInit};
+        }
+        apply_extra_ws_headers(client_, config_.extra_headers);
+        esp_websocket_register_events(client_, WEBSOCKET_EVENT_ANY,
+                                      &Impl::websocket_event_trampoline, this);
 
         if (esp_websocket_client_start(client_) != ESP_OK) {
             teardown();
@@ -265,6 +286,31 @@ public:
 
     void set_event_callback(EventCallback cb) { event_callback_ = std::move(cb); }
 
+    void on_usb_host_ready() override
+    {
+        if (!running_ || !usb_transport_) {
+            return;
+        }
+        ESP_LOGI(kTag, "USB voice host ready");
+        send_hello();
+    }
+
+    void on_usb_json(std::string_view json) override
+    {
+        if (!running_ || !usb_transport_ || json.empty()) {
+            return;
+        }
+        parse_control(json.data(), json.size());
+    }
+
+    void on_usb_audio(std::span<const std::uint8_t> opus) override
+    {
+        if (!running_ || !usb_transport_ || opus.empty()) {
+            return;
+        }
+        handle_audio_frame(opus.data(), opus.size());
+    }
+
 private:
     // ---- lifecycle ---------------------------------------------------------
 
@@ -288,6 +334,7 @@ private:
 
     void teardown()
     {
+        usb_voice_clear_sink(this);
         if (sender_task_ != nullptr) {
             sender_should_exit_.store(true, std::memory_order_release);
             AudioChunk* sentinel = nullptr;
@@ -334,6 +381,7 @@ private:
         }
         rx_capacity_ = 0;
         rx_len_ = 0;
+        running_ = false;
         set_state(ConversationState::Idle);
     }
 
@@ -385,6 +433,7 @@ private:
         std::snprintf(cid, sizeof(cid), "00000000-0000-0000-0000-%02x%02x%02x%02x%02x%02x",
                       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
+        device_id_ = dev;
         headers_.clear();
         if (!token_.empty()) {
             headers_ += "Authorization: Bearer " + token_ + "\r\n";
@@ -532,15 +581,22 @@ private:
     bool send_json_locked(cJSON* root)
     {
         // send_mutex_ must be held by the caller.
-        if (client_ == nullptr || !esp_websocket_client_is_connected(client_)) return false;
         char* str = cJSON_PrintUnformatted(root);
         if (str == nullptr) return false;
-        const int rc = esp_websocket_client_send_text(client_, str, std::strlen(str), kSendTimeout);
+        bool ok = false;
+        if (usb_transport_) {
+            if (UsbVoicePort* port = usb_voice_port(); port != nullptr) {
+                ok = port->send_json(str);
+            }
+        } else if (client_ != nullptr && esp_websocket_client_is_connected(client_)) {
+            const int rc = esp_websocket_client_send_text(client_, str, std::strlen(str), kSendTimeout);
+            // rc==0 means the poll_write timed out (nothing sent). Serialized JSON
+            // is always non-empty here, so only rc>0 is a real success — treating 0
+            // as success would silently drop control messages and hang the turn.
+            ok = rc > 0;
+        }
         cJSON_free(str);
-        // rc==0 means the poll_write timed out (nothing sent). Serialized JSON
-        // is always non-empty here, so only rc>0 is a real success — treating 0
-        // as success would silently drop control messages and hang the turn.
-        return rc > 0;
+        return ok;
     }
 
     void send_hello()
@@ -548,7 +604,10 @@ private:
         cJSON* root = cJSON_CreateObject();
         cJSON_AddStringToObject(root, "type", "hello");
         cJSON_AddNumberToObject(root, "version", 1);
-        cJSON_AddStringToObject(root, "transport", "websocket");
+        cJSON_AddStringToObject(root, "transport", usb_transport_ ? "usb" : "websocket");
+        if (usb_transport_ && !device_id_.empty()) {
+            cJSON_AddStringToObject(root, "device_id", device_id_.c_str());
+        }
         cJSON* features = cJSON_AddObjectToObject(root, "features");
         cJSON_AddBoolToObject(features, "mcp", false);
         cJSON* ap = cJSON_AddObjectToObject(root, "audio_params");
@@ -809,7 +868,10 @@ private:
     // Returns false if the audio was discarded (not connected / not listening).
     bool encode_and_send(std::int16_t* samples)
     {
-        if (client_ == nullptr || !esp_websocket_client_is_connected(client_)) return false;
+        const bool link_up = usb_transport_
+                                 ? (usb_voice_port() != nullptr && usb_voice_port()->active())
+                                 : (client_ != nullptr && esp_websocket_client_is_connected(client_));
+        if (!link_up) return false;
         if (!hello_received_) return false;
         if (state_.load(std::memory_order_relaxed) != ConversationState::Listening) return false;
 
@@ -826,17 +888,25 @@ private:
         }
         if (out.encoded_bytes == 0) return true;
 
-        int rc;
+        int rc = 0;
         {
             std::lock_guard lock{send_mutex_};
-            rc = esp_websocket_client_send_bin(
-                client_, reinterpret_cast<const char*>(enc_out_buf_.data()),
-                static_cast<int>(out.encoded_bytes), kSendTimeout);
+            if (usb_transport_) {
+                UsbVoicePort* port = usb_voice_port();
+                const bool sent = port != nullptr && port->send_audio(std::span<const std::uint8_t>{
+                                   enc_out_buf_.data(), static_cast<std::size_t>(out.encoded_bytes)});
+                rc = sent ? static_cast<int>(out.encoded_bytes) : -1;
+            } else {
+                rc = esp_websocket_client_send_bin(
+                    client_, reinterpret_cast<const char*>(enc_out_buf_.data()),
+                    static_cast<int>(out.encoded_bytes), kSendTimeout);
+            }
         }
         ++audio_seq_;
         // rc==0 is a poll_write timeout (nothing sent); the Opus frame here is
         // always non-empty, so treat rc<=0 as a failed send — matching the
-        // gemini/openai audio-send heartbeats.
+        // gemini/openai audio-send heartbeats. USB reports -1 when the port
+        // refuses the frame.
         if (rc <= 0) {
             ESP_LOGW(kTag, "audio send failed seq=%lu rc=%d",
                      static_cast<unsigned long>(audio_seq_), rc);
@@ -854,11 +924,14 @@ private:
     std::string url_;
     std::string token_;
     std::string headers_;
+    std::string device_id_;
     std::string session_id_;
     ConversationConfig config_;
     EventCallback event_callback_;
 
     esp_websocket_client_handle_t client_{nullptr};
+    bool usb_transport_{false};
+    bool running_{false};
     std::atomic<ConversationState> state_{ConversationState::Idle};
     std::mutex send_mutex_;
 
@@ -904,6 +977,11 @@ XiaoZhiClient::~XiaoZhiClient() = default;
 void XiaoZhiClient::set_event_callback(EventCallback cb)
 {
     impl_->set_event_callback(std::move(cb));
+}
+
+void XiaoZhiClient::set_usb_transport(bool enabled)
+{
+    impl_->set_usb_transport(enabled);
 }
 
 std::uint32_t XiaoZhiClient::tx_evicted_chunks() const

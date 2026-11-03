@@ -6,7 +6,9 @@ the serial_factory hook. The contract under test is:
   • Lines tagged "$MCP:" that come back from the device resolve the matching
     response future by JSON-RPC id.
   • Non-prefixed lines are spooled to the log file, not the RPC queue.
-  • Hot-plug: SerialException in readline triggers reconnect.
+  • Hot-plug: SerialException in read triggers reconnect.
+  • A binary voice frame may contain newlines and `$MCP:` without
+    splitting the JSON-RPC line that follows it.
 """
 
 from __future__ import annotations
@@ -57,10 +59,25 @@ class FakeSerial:
         self.feed((line + "\n").encode("utf-8"))
 
     def kill_next_read(self) -> None:
-        """Force the next readline to raise SerialException (hot-unplug)."""
+        """Force the next read to raise SerialException (hot-unplug)."""
         self._fail_on_next_read = True
 
     # pyserial-compatible surface --------------------------------------------
+
+    def read(self, size: int = 1) -> bytes:
+        if self._fail_on_next_read:
+            self._fail_on_next_read = False
+            raise serial.SerialException("simulated unplug")
+        end = time.monotonic() + (self.timeout or 0.2)
+        while time.monotonic() < end:
+            with self._rx_lock:
+                if self._rx_buf:
+                    n = min(size, len(self._rx_buf))
+                    out = bytes(self._rx_buf[:n])
+                    del self._rx_buf[:n]
+                    return out
+            time.sleep(0.005)
+        return b""
 
     def readline(self) -> bytes:
         if self._fail_on_next_read:
@@ -213,7 +230,7 @@ async def test_call_tool_timeout_when_no_response(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_hot_plug_reconnects_after_simulated_unplug(tmp_path: Path):
-    """SerialException in readline must trigger a fresh open()."""
+    """SerialException in read must trigger a fresh open()."""
     factory = FakeSerialFactory()
     transport = UsbTransport(
         port="/dev/cu.fake",
@@ -337,4 +354,59 @@ async def test_disconnect_fails_pending_immediately(tmp_path: Path):
     with pytest.raises(ConnectionError):
         await asyncio.wait_for(pending, timeout=1.0)
 
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_voice_frame_with_newline_does_not_split_mcp_line(tmp_path: Path):
+    """Opus bytes may contain \\n and the `$MCP:` prefix. They must stay one frame."""
+    from stackchan_mcp.usb_voice_framer import AUDIO_UPLINK, encode_usb_voice_frame
+
+    factory = FakeSerialFactory()
+    transport = UsbTransport(
+        port="/dev/cu.fake",
+        log_path=tmp_path / "usb.log",
+        reconnect_delay_s=0.05,
+        serial_factory=factory,
+    )
+    seen: list[bytes] = []
+    transport.add_voice_frame_handler(lambda frame: seen.append(frame.payload))
+    await transport.start(connect_timeout_s=2.0)
+    fake = factory.instances[0]
+
+    opus = b"\n$MCP: not-a-line\n\x00opus"
+    fake.feed(encode_usb_voice_frame(AUDIO_UPLINK, opus))
+    fake.feed_line(f'{MCP_PREFIX} {{"jsonrpc":"2.0","id":7,"result":{{"ok":true}}}}')
+
+    for _ in range(50):
+        if seen and any(not fut.done() for fut in []):
+            break
+        if seen:
+            break
+        await asyncio.sleep(0.02)
+    assert seen == [opus]
+
+    # A later tool response still resolves by id. Seed a pending call by
+    # writing one and answering with the line already fed above... the line
+    # may have been consumed before call_tool. Send a fresh exchange.
+    seen.clear()
+
+    async def reply():
+        for _ in range(200):
+            if fake.written:
+                break
+            await asyncio.sleep(0.01)
+        sent = fake.written.decode()
+        body = json.loads(sent[len(MCP_PREFIX) + 1:])
+        fake.feed(encode_usb_voice_frame(AUDIO_UPLINK, b"\nmore\n"))
+        fake.feed_line(f'{MCP_PREFIX} {{"jsonrpc":"2.0","id":{body["id"]},"result":{{"ok":true}}}}')
+
+    asyncio.create_task(reply())
+    result = await transport.call_tool("self.robot.set_head_angles", {"yaw": 1}, timeout_s=2.0)
+    assert result["result"] == {"ok": True}
+    for _ in range(50):
+        if any(payload == b"\nmore\n" for payload in seen):
+            break
+        await asyncio.sleep(0.02)
+    assert b"\nmore\n" in seen
     await transport.stop()

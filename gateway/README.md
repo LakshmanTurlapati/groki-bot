@@ -244,6 +244,66 @@ or Edge), tab "对话" (Conversation):
 "Hi Grok" and start talking (or "Hey Groki" if you set
 `STACKCHAN_WAKE_PHRASE=hey groki`, see [Changing the wake word](#changing-the-wake-word)).
 
+## USB voice (no Wi-Fi path to the gateway)
+
+Use this when the robot is plugged into the computer over USB and cannot open
+`ws://<LAN>:8765`. The same Opus frames and `hello` / `listen` / `tts` JSON
+then ride the serial port that `STACKCHAN_USB_TRANSPORT` already uses for
+`$MCP:` tool calls.
+
+1. Flash a firmware that contains this USB voice link (CoreS3):
+
+   ```bash
+   make set-target BOARD=cores3   # first time for this board
+   make build BOARD=cores3
+   make flash BOARD=cores3 PORT=/dev/cu.usbmodem*
+   ```
+
+   Stop the gateway first. With `STACKCHAN_USB_TRANSPORT=1` it holds
+   `/dev/cu.usbmodem*` and the flash will fail with "port busy".
+
+2. In `gateway/.env`:
+
+   ```bash
+   STACKCHAN_USB_TRANSPORT=1
+   STACKCHAN_USB_VOICE=1          # immediate; see the table below
+   STACKCHAN_VOICE_BACKEND=gbot   # or gemini
+   ```
+
+3. The conversation provider on the robot stays "XiaoZhi 服务器". The Wi-Fi
+   URL is still used when USB voice mode is off. With the cable connected and
+   no WebSocket session, the gateway sends `voice/mode` and the robot answers
+   with the usual hello, then streams 16 kHz Opus up and plays 24 kHz Opus down.
+
+4. Proactive speech, from this computer only (no wake word):
+
+   ```bash
+   curl -s -X POST http://127.0.0.1:8766/say \
+     -H 'Content-Type: application/json' \
+     -d '{"text": "the build finished"}'
+   ```
+
+   `/say` is rejected unless the TCP peer is loopback. It opens or reuses the
+   voice session and calls the same `speak_text` path as a live Gemini or
+   Grok session. A robot that is already connected over Wi-Fi keeps that
+   session; `/say` does not move it to USB.
+
+Limits:
+
+- The serial pipe is full duplex. The conversation is half-duplex, the same
+  as the Wi-Fi client: the microphone is off while the speaker plays, so the
+  robot does not hear you during its own reply.
+- Uplink is 24 kbit/s Opus, 60 ms frames (about 3 KiB/s). Downlink is 24 kHz
+  Opus on the same 60 ms grid, usually a few hundred bytes a frame. USB
+  Serial/JTAG ignores the 115200 baud setting in the gateway; that number is
+  only what pyserial asks for. The controller runs at USB full-speed, which
+  has room for these frames. A real 115200 UART would be tight if both
+  directions were saturated, and this link is not one.
+- `STACKCHAN_USB_VOICE=auto` (the default) waits `STACKCHAN_USB_VOICE_DEFER_S`
+  seconds (default 8) before signaling, so a robot that can reach the gateway
+  over Wi-Fi keeps the WebSocket. Set `1` when the cable is the only path.
+  Set `0` to keep USB as tool calls only. `/say` does not wait out the defer.
+
 ## Face tracking
 
 The robot turns its head to follow your face. A small Mac program,
@@ -414,7 +474,9 @@ reconnect the MCP client, after a change).
 | `STACKCHAN_FACE_TRACKER_CAMERA` | empty | Part of the camera name to use; empty uses the tracker's default order |
 | `STACKCHAN_HEAD_FOLLOW_DEFAULT` | on | `0` starts with head follow off; "look at me" turns it on |
 | `STACKCHAN_GEMINI_DEVICE_TOOLS` | off | `1` gives both voice backends face/LED/head tools. Firmware with device MCP gets them as MCP calls; the Groki Bot firmware gets them as XiaoZhi emotion, `led` and `head` messages (`head` needs firmware newer than v0.2.1) |
-| `STACKCHAN_USB_TRANSPORT` | off | `1` enables the USB serial control channel; it locks `/dev/cu.usbmodem*` |
+| `STACKCHAN_USB_TRANSPORT` | off | `1` enables the USB serial channel (tool calls, and voice when USB voice mode is on); it locks `/dev/cu.usbmodem*` |
+| `STACKCHAN_USB_VOICE` | `auto` | `1` carries Opus and tts/listen JSON over USB as soon as the cable is up. `auto` does that only when no WebSocket voice session appears within `STACKCHAN_USB_VOICE_DEFER_S` (default 8). `0` leaves USB as tool calls only |
+| `STACKCHAN_USB_VOICE_DEFER_S` | `8` | Seconds `auto` waits before opening USB voice, so a working Wi-Fi session can connect first |
 | `STACKCHAN_ASK_CLAUDE` | on when the `claude` CLI is found | `0` removes the `ask_claude` voice tool even when the CLI is installed |
 | `STACKCHAN_CLAUDE_BIN` | `claude` on PATH | Claude CLI used by `ask_claude` |
 | `STACKCHAN_CLAUDE_MODEL` | `claude-sonnet-5` | Model passed to the Claude CLI by `ask_claude` and Mac tasks |
@@ -460,6 +522,7 @@ reconnect the MCP client, after a change).
 | `Could not find Opus library` | Install Opus (`brew install opus` or `apt install libopus0`). |
 | Head does not follow faces | `/debug/status` → `face_tracking`. `null`: gateway too old or not restarted. `tracker_running: false`: build the tracker, or check the log for `face tracker exited returncode=2` (no camera or no camera permission, see [Allow camera access](#allow-camera-access)). `face_reported: false`: the camera does not see a face. `head_follow: false`: say "look at me". Everything fine but the head is still: the firmware is older than the `head` message; update it. |
 | Flashing fails with "port busy" | Stop the gateway if you enabled `STACKCHAN_USB_TRANSPORT`. |
+| USB cable is in, but no voice | Provider must be XiaoZhi. `STACKCHAN_USB_TRANSPORT=1`. `STACKCHAN_USB_VOICE=1` if you do not want to wait for the Wi-Fi defer. `/debug/status` → `device.transport` is `usb`. `/say` from another machine returns `local only`. |
 | `.env` change has no effect | Restart the gateway; with setup A, reconnect the MCP server (`/mcp` in Claude Code). |
 | Gemini hand-off says the task could not be sent | Is `stackchan-gbot-proxy` running (`curl http://127.0.0.1:18770/health`)? Does `gbot bots list` work in a terminal and list the name in `STACKCHAN_TOOL_BOT`? Is the Grok Bot app signed in? |
 
