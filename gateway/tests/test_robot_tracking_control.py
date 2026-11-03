@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Joseph Zhou
+# SPDX-License-Identifier: MIT
 import math
 
 import pytest
