@@ -1,11 +1,15 @@
 # Groki Vision Tracker
 
-Mac face tracker for Groki Bot. It reads the Mac's camera, finds the most
-confident face in each frame with Apple Vision, and posts the face position
-(`x`, `y`, `width`, `height` in 0..1, `confidence`, `timestamp`) to the
-gateway's `/track` endpoint. The gateway turns that into head motion. Camera
-frames stay in memory on the Mac; only the face position is sent, to
-`127.0.0.1` by default.
+Apple Vision face detection for Groki Bot. By default, the gateway captures
+the robot's camera and supplies frames to this executable through stdin.
+This mode does not access a Mac camera or request camera permission. Frames
+stay in memory and are never saved. The gateway controls capture timing,
+authentication, conversation pauses, and guarded head movement.
+
+Set `STACKCHAN_FACE_TRACKER_SOURCE=mac` in the gateway to explicitly use the
+legacy Mac webcam path. A failed robot camera never selects a Mac camera
+automatically. This older path posts face positions to `/track`; the gateway
+accepts those positions for motion only in `mac` mode.
 
 Setup, camera permission and how to check it works:
 [gateway README, Face tracking](../../gateway/README.md#face-tracking).
@@ -39,6 +43,35 @@ swift test -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/us
 
 ## Run by hand
 
+The gateway starts the robot frame worker with `--stdin-frames`. Each input
+record has an eight-byte header: a little-endian UInt32 encoding (`1` for
+RGB565, `2` for JPEG), then a little-endian UInt32 payload length. Both
+encodings must describe a 320×240 image. RGB565 payloads contain exactly
+153600 row-major pixel bytes, with the high byte first; JPEG payloads are
+bounded to 65536 bytes. The legacy `--stdin-rgb565` option accepts consecutive
+raw frames without headers. Each complete frame produces one JSON line on
+stdout:
+
+```json
+{"face":{"x":0.5,"y":0.5,"width":0.2,"height":0.3,"confidence":0.9}}
+{"face":null}
+```
+
+Coordinates use Apple's normalized Vision rectangle convention: the origin
+is at the bottom left. A clean stdin EOF exits successfully; a truncated
+frame or detection failure exits with code 1. Diagnostics go to stderr.
+The worker detects faces in every frame and associates a target using box
+overlap, distance, and size continuity. It initially selects the largest
+confident face and retains its spatial target across brief misses. It does
+not identify people. The gateway supplies one frame at a time and waits for
+its result before capturing another. Device addresses and passwords are
+never passed to the worker.
+
+Research, controller tuning, and measured hardware performance:
+[robot-camera tracking notes](../../docs/robot-camera-tracking.md).
+
+To run the legacy Mac camera path by hand:
+
 ```bash
 .build/release/groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8
 ```
@@ -65,7 +98,8 @@ camera access not granted.
 
 `live-view/server.py` is a small debugging page. Stop the gateway from
 starting the tracker (`STACKCHAN_FACE_TRACKER_AUTOSTART=0` in
-`gateway/.env`), then:
+`gateway/.env`) and explicitly select `STACKCHAN_FACE_TRACKER_SOURCE=mac`
+if the preview should control the head, then:
 
 ```bash
 cd gateway

@@ -129,6 +129,10 @@ void render_task_entry(void* arg) {
             continue;
         }
 
+        std::unique_lock render_lock(state->camera_render_mutex);
+        if (state->i2c_quiesce.load(std::memory_order_acquire))
+            continue;
+
         // A full-screen overlay (SoftAP QR screen > per-board settings UI —
         // priority lives in screens::init) takes the panel over from the
         // avatar. Canvas-based overlays render lazily and report whether
@@ -273,6 +277,7 @@ void render_task_entry(void* arg) {
             balloon_pending = false;
             args.state->notify_balloon_complete();
         }
+        render_lock.unlock();
 
         // Deduct this frame's draw time from the target period. A full-screen
         // draw (~140 ms) overruns the budget every frame, and a 1-tick sleep

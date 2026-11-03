@@ -29,18 +29,22 @@ namespace stackchan::conversation {
 // half-duplex, so both directions are not saturated together. USB Serial/JTAG
 // ignores the host baud setting (115200 is only a pyserial placeholder) and
 // the link is USB full-speed, which has room for these frames. A payload
-// larger than an Opus packet (1275 B, RFC 6716) is rejected.
+// larger than an Opus packet (1275 B, RFC 6716) is rejected for audio. Voice
+// JSON and negotiated camera chunks have separate bounded payload sizes.
 
 inline constexpr std::uint8_t kUsbVoiceSof0 = 0xFF;
 inline constexpr std::uint8_t kUsbVoiceSof1 = 0xFE;
 inline constexpr std::uint8_t kUsbVoiceVersion = 1;
 inline constexpr std::uint16_t kUsbVoiceMaxPayload = 1275;
+inline constexpr std::uint16_t kUsbVoiceMaxJson = 4096;
+inline constexpr std::uint16_t kUsbCameraMaxPayload = 2056;
 inline constexpr std::size_t kUsbVoiceMaxLine = 4096;
 
 enum class UsbVoiceFrameType : std::uint8_t {
     AudioUplink = 1,   // device -> host, raw Opus (same bytes as a WS binary frame)
     AudioDownlink = 2, // host -> device, raw Opus
     VoiceJson = 3,     // either direction, compact UTF-8 JSON
+    CameraChunk = 4,   // device -> host: request id u32 LE, offset u32 LE, up to 2048 image bytes
 };
 
 struct UsbVoiceFrame {
@@ -58,9 +62,8 @@ struct UsbVoiceEvent {
 
 std::uint16_t usb_voice_crc16(std::span<const std::uint8_t> data);
 
-// Empty when `payload` exceeds kUsbVoiceMaxPayload.
-std::vector<std::uint8_t> encode_usb_voice_frame(UsbVoiceFrameType type,
-                                                 std::span<const std::uint8_t> payload);
+// Empty when `payload` exceeds the limit for its frame type.
+std::vector<std::uint8_t> encode_usb_voice_frame(UsbVoiceFrameType type, std::span<const std::uint8_t> payload);
 
 // Incremental demux. Feed arbitrary chunks; pop events in arrival order.
 class UsbVoiceStreamParser {
@@ -74,6 +77,9 @@ private:
 
     std::vector<std::uint8_t> buf_;
     std::vector<UsbVoiceEvent> events_;
+    std::vector<std::uint8_t> text_;
+    bool discard_text_ = false;
+    bool drop_line_ = false;
 };
 
 } // namespace stackchan::conversation

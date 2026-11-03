@@ -6,6 +6,7 @@
 #include <sdkconfig.h>
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <mutex>
@@ -56,16 +57,17 @@ bool begin_with_retry(CameraPixelFormat format, CameraFrameSize size)
     return false;
 }
 
-// Pause the PSRAM-heavy render and polling loops while acquiring frames.
-// This delay lets typical in-flight iterations drain; bus exclusion is
-// provided by M5Unified's transaction mutex, not by this flag or delay.
+// Exclude framebuffer rendering while camera DMA and encoding use PSRAM.
+// Polling tasks observe the pause flag; I2C itself uses M5Unified's bus mutex.
 struct QuiesceGuard {
-    QuiesceGuard()
-    {
+    std::unique_lock<std::mutex> render_lock;
+    explicit QuiesceGuard(bool tracking = false) : render_lock(g_state->camera_render_mutex, std::defer_lock) {
         g_state->i2c_quiesce.store(true, std::memory_order_release);
-        // demo_loop polls every ~50 ms, led_task every 100 ms, render every
-        // 33 ms — allow typical iterations to observe the pause.
-        vTaskDelay(pdMS_TO_TICKS(150));
+        render_lock.lock();
+        // User-initiated diagnostics retain the conservative polling drain;
+        // tracking waits only for the actual in-flight renderer above.
+        if (!tracking)
+            vTaskDelay(pdMS_TO_TICKS(150));
     }
     ~QuiesceGuard()
     {
@@ -73,10 +75,119 @@ struct QuiesceGuard {
     }
 };
 
-bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options,
-                  std::vector<std::uint8_t>& out, std::size_t& w, std::size_t& h,
-                  std::string& format)
-{
+std::uint32_t now_ms() {
+    return static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
+}
+
+std::optional<HeadControl::Result> wait_for_servo(std::optional<std::uint32_t> sequence) {
+    if (!sequence)
+        return {};
+    const auto deadline = now_ms() + 200;
+    do {
+        if (auto result = g_state->servo.result(*sequence))
+            return result;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    } while (HeadControl::before(now_ms(), deadline));
+    g_state->servo.cancel(*sequence);
+    return {};
+}
+
+bool tracking_capture(std::vector<std::uint8_t>& out, std::size_t& w, std::size_t& h, std::string& format,
+                      stackchan::wifi_config::CameraCaptureMetadata& metadata,
+                      const std::function<bool(std::vector<std::uint8_t>&)>& transform = {}, bool motion = false) {
+    const auto started = now_ms();
+    metadata.tracking_busy = true;
+    std::unique_lock lock(g_camera_mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return false;
+    if (!g_state->servo.available() || !g_camera.initialised()) {
+        metadata.tracking_busy = false;
+        return false;
+    }
+    const auto prepare_request =
+        g_state->servo.submit(HeadControl::Operation::Prepare, now_ms(), {}, {}, false, 0, motion);
+    if (!prepare_request)
+        return false;
+    auto prepared = wait_for_servo(prepare_request);
+    if (!prepared || !prepared->ok) {
+        metadata.tracking_busy = prepared && !prepared->unavailable;
+        return false;
+    }
+    struct Reservation {
+        std::string id;
+        ~Reservation() {
+            if (!id.empty())
+                g_state->servo.abandon_frame(id);
+        }
+    } reservation{prepared->frame_id};
+    const auto deadline = now_ms() + 500;
+    QuiesceGuard quiesce{true};
+    metadata.tracking_busy = false;
+    // The resident driver has one framebuffer. Return its queued/partial
+    // image once; the next acquisition is composed wholly under exclusion.
+    for (int i = 0; i < 1; ++i) {
+        if (!HeadControl::before(now_ms(), deadline))
+            return false;
+        auto discarded = g_camera.capture();
+        if (!discarded || !HeadControl::before(now_ms(), deadline))
+            return false;
+    }
+    if (!HeadControl::before(now_ms(), deadline))
+        return false;
+    if (motion) {
+        const auto exposure_request =
+            g_state->servo.submit(HeadControl::Operation::Exposure, now_ms(), prepared->frame_id);
+        if (!exposure_request) {
+            metadata.tracking_busy = true;
+            return false;
+        }
+        auto exposure = wait_for_servo(exposure_request);
+        if (!exposure || !exposure->ok) {
+            metadata.tracking_busy = exposure && !exposure->unavailable;
+            return false;
+        }
+    }
+    auto frame = g_camera.capture();
+    const auto captured_at = now_ms();
+    if (!frame || !HeadControl::before(captured_at, deadline))
+        return false;
+    const auto finalize_request =
+        g_state->servo.submit(HeadControl::Operation::Finalize, now_ms(), prepared->frame_id, {}, false, captured_at);
+    if (!finalize_request) {
+        metadata.tracking_busy = true;
+        return false;
+    }
+    auto finalized = wait_for_servo(finalize_request);
+    if (!finalized || !finalized->ok) {
+        metadata.tracking_busy = finalized && !finalized->unavailable;
+        return false;
+    }
+    out.assign(frame->data(), frame->data() + frame->size());
+    w = frame->width();
+    h = frame->height();
+    format = "rgb565be";
+    metadata.capture_yaw = finalized->measured.yaw;
+    metadata.capture_pitch = finalized->measured.pitch;
+    metadata.capture_ms = now_ms() - started;
+    metadata.motion_compensated = finalized->motion;
+    metadata.capture_motion_deg = finalized->capture_motion_deg;
+    // Encoding the copied frame while the renderer is excluded avoids
+    // competing full-screen PSRAM reads during the SIMD conversion.
+    if (transform && !transform(out))
+        return false;
+    metadata.frame_id = finalized->frame_id;
+    reservation.id.clear();
+    return true;
+}
+
+bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options, std::vector<std::uint8_t>& out,
+                  std::size_t& w, std::size_t& h, std::string& format,
+                  stackchan::wifi_config::CameraCaptureMetadata& metadata) {
+    if (options.tracking) {
+        if (options.raw_bayer || options.colorbar)
+            return false;
+        return tracking_capture(out, w, h, format, metadata);
+    }
     std::lock_guard<std::mutex> lock(g_camera_mutex);
     // Discard two frames after the quiesce drain so the one we keep was
     // composed entirely under quiesce.
@@ -219,14 +330,29 @@ void register_sinks(SharedState& state)
         return; // has_camera stays false — web UI hides the section
     }
     g_state = &state;
+    state.servo.camera_available.store(true);
     stackchan::wifi_config::set_camera_capture_sink(&capture_sink);
     stackchan::wifi_config::set_camera_reg_sink(&reg_sink);
+}
+
+bool capture_tracking_frame(std::vector<std::uint8_t>& out, std::size_t& width, std::size_t& height,
+                            std::string& format, wifi_config::CameraCaptureMetadata& metadata,
+                            const std::function<bool(std::vector<std::uint8_t>&)>& transform, bool motion) {
+    if (!g_state || !g_supported)
+        return false;
+    return tracking_capture(out, width, height, format, metadata, transform, motion);
 }
 
 #else // !CONFIG_STACKCHAN_CAMERA_ENABLED
 
 void init_resident(stackchan::board::Board& /*board*/) {}
 void register_sinks(SharedState& /*state*/) {}
+
+bool capture_tracking_frame(std::vector<std::uint8_t>&, std::size_t&, std::size_t&, std::string&,
+                            wifi_config::CameraCaptureMetadata&, const std::function<bool(std::vector<std::uint8_t>&)>&,
+                            bool) {
+    return false;
+}
 
 #endif // CONFIG_STACKCHAN_CAMERA_ENABLED
 

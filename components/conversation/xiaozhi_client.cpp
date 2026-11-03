@@ -27,6 +27,7 @@
 #include "esp_opus_dec.h"
 #include "esp_opus_enc.h"
 #include "conversation/control_dispatch.hpp"
+#include "conversation/tracking_control.hpp"
 #include "conversation/usb_voice_port.hpp"
 #include "psram_allocator.hpp"
 #include "ws_extra_headers.hpp"
@@ -610,16 +611,24 @@ private:
         }
         cJSON* features = cJSON_AddObjectToObject(root, "features");
         cJSON_AddBoolToObject(features, "mcp", false);
+        cJSON_AddBoolToObject(features, "camera_tracking_v1", config_.camera_tracking_v1);
+        cJSON_AddBoolToObject(features, "camera_tracking_v2", config_.camera_tracking_v1);
         cJSON* ap = cJSON_AddObjectToObject(root, "audio_params");
         cJSON_AddStringToObject(ap, "format", "opus");
         cJSON_AddNumberToObject(ap, "sample_rate", kUplinkSampleRate);
         cJSON_AddNumberToObject(ap, "channels", 1);
         cJSON_AddNumberToObject(ap, "frame_duration", kUplinkFrameMs);
+        bool sent = false;
         {
             std::lock_guard lock{send_mutex_};
-            (void)send_json_locked(root);
+            sent = send_json_locked(root);
         }
         cJSON_Delete(root);
+        if (!sent) {
+            set_state(ConversationState::Error);
+            emit_error(ConversationError::NotConnected, "voice hello send failed");
+            return;
+        }
         ESP_LOGI(kTag, "hello sent");
     }
 
@@ -627,8 +636,7 @@ private:
     // after the hello handshake; the server then handles turn boundaries
     // itself. NOTE: we never send `listen stop` — in mode=auto the server
     // treats a mid-session stop as a barge-in and aborts its own TTS.
-    void send_listen_start()
-    {
+    bool send_listen_start() {
         cJSON* root = cJSON_CreateObject();
         if (!session_id_.empty()) {
             cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
@@ -636,12 +644,19 @@ private:
         cJSON_AddStringToObject(root, "type", "listen");
         cJSON_AddStringToObject(root, "state", "start");
         cJSON_AddStringToObject(root, "mode", "auto"); // server-side VAD
+        bool sent = false;
         {
             std::lock_guard lock{send_mutex_};
-            (void)send_json_locked(root);
+            sent = send_json_locked(root);
         }
         cJSON_Delete(root);
+        if (!sent) {
+            set_state(ConversationState::Error);
+            emit_error(ConversationError::NotConnected, "voice listen send failed");
+            return false;
+        }
         ESP_LOGI(kTag, "listen start (mode=auto)");
+        return true;
     }
 
     // ---- inbound: JSON control --------------------------------------------
@@ -689,6 +704,22 @@ private:
                     emit_text(ConversationEventType::AssistantEmotion, json_str(root, "emotion"));
                 } else if (std::strcmp(type, "led") == 0) {
                     handle_led(root);
+                } else if (std::strcmp(type, "head_tracking") == 0) {
+                    if (auto mode = parse_head_tracking_mode(root)) {
+                        ConversationEvent ev{};
+                        ev.type = ConversationEventType::HeadTrackingModeChanged;
+                        ev.head_tracking_mode = *mode;
+                        emit(ev);
+                    }
+                } else if (std::strcmp(type, "head_track") == 0) {
+                    if (config_.camera_tracking_v1) {
+                        if (auto command = parse_head_track(root)) {
+                            ConversationEvent ev{};
+                            ev.type = ConversationEventType::HeadTrack;
+                            ev.head_tracking_command = std::move(*command);
+                            emit(ev);
+                        }
+                    }
                 } else if (std::strcmp(type, "tts") == 0) {
                     handle_tts(root);
                 } else if (std::strcmp(type, "system") == 0 || std::strcmp(type, "alert") == 0) {
@@ -735,8 +766,9 @@ private:
             emit_error(ConversationError::ProtocolError, "decoder open failed");
             return;
         }
+        if (!send_listen_start())
+            return;
         hello_received_ = true;
-        send_listen_start();
         // Session is live — the conversation task starts listening.
         set_state(ConversationState::Listening);
     }

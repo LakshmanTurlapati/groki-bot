@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: 2026 sefuzhou770801-hub
 // SPDX-License-Identifier: BSL-1.0
 //
-// Mac face tracker for Groki Bot. Finds the most confident face in each camera
-// frame with Apple Vision and POSTs its position to the gateway's /track
-// endpoint, which turns it into head motion. Frames stay in memory; nothing is
-// saved or sent anywhere else.
+// Apple Vision detection for robot frames on stdin or an explicitly selected
+// Mac camera. Frames stay in memory; nothing is saved.
 //
 // Usage: groki-vision-tracker [--endpoint URL] [--fps N] [--camera NAME]
 import AVFoundation
 import CameraSelection
+import FrameInput
 import Foundation
 import Vision
+import ImageIO
 
 struct DetectionPayload: Codable {
     let x: Double
@@ -19,6 +19,86 @@ struct DetectionPayload: Codable {
     let width: Double
     let height: Double
     let timestamp: Double
+}
+
+struct WorkerFace: Encodable {
+    let x: Double
+    let y: Double
+    let confidence: Double
+    let width: Double
+    let height: Double
+}
+
+struct WorkerResult: Encodable {
+    let face: WorkerFace?
+    enum CodingKeys: String, CodingKey { case face }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let face { try container.encode(face, forKey: .face) }
+        else { try container.encodeNil(forKey: .face) }
+    }
+}
+
+/// One fixed-size input record produces one JSON result, including when no face is visible.
+func runStdinWorker(records: Bool = false) throws {
+    let input = FileHandle.standardInput
+    let output = FileHandle.standardOutput
+    let encoder = JSONEncoder()
+    let handler = VNSequenceRequestHandler()
+    var selector = FaceTargetSelector()
+    while true {
+        let record: FrameRecord?
+        if records {
+            record = try FrameRecord.read(using: { try input.read(upToCount: $0) })
+        } else if let data = try RGB565Frame.read(using: { try input.read(upToCount: $0) }) {
+            record = FrameRecord(encoding: .rgb565, data: data)
+        } else {
+            record = nil
+        }
+        guard let record else { return }
+        try autoreleasepool {
+            let image: CGImage
+            if record.encoding == .jpeg {
+                guard let source = CGImageSourceCreateWithData(record.data as CFData, nil),
+                      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                      properties[kCGImagePropertyPixelWidth] as? Int == 320,
+                      properties[kCGImagePropertyPixelHeight] as? Int == 240,
+                      let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                    throw FrameInputError.invalidFrameSize
+                }
+                image = decoded
+            } else {
+            let pixels = try RGB565Frame.bgra(record.data)
+            guard let provider = CGDataProvider(data: pixels as CFData),
+                  let decoded = CGImage(
+                    width: RGB565Frame.width, height: RGB565Frame.height,
+                    bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: RGB565Frame.width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+                        .union(.byteOrder32Little),
+                    provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+                  ) else {
+                throw FrameInputError.invalidFrameSize
+            }
+            image = decoded
+            }
+            let request = VNDetectFaceRectanglesRequest()
+            try handler.perform([request], on: image, orientation: .up)
+            let boxes = (request.results ?? []).map { observation in
+                let box = observation.boundingBox
+                return FaceBox(x: Double(box.midX), y: Double(box.midY),
+                               width: Double(box.width), height: Double(box.height),
+                               confidence: Double(observation.confidence))
+            }
+            let face = selector.select(boxes, timestamp: Date().timeIntervalSince1970).map {
+                WorkerFace(x: $0.x, y: $0.y, confidence: $0.confidence, width: $0.width, height: $0.height)
+            }
+            var response = try encoder.encode(WorkerResult(face: face))
+            response.append(0x0a)
+            try output.write(contentsOf: response)
+        }
+    }
 }
 
 final class GatewayClient {
@@ -136,6 +216,16 @@ func argument(_ name: String) -> String? {
     let args = CommandLine.arguments
     guard let idx = args.firstIndex(of: name), idx + 1 < args.count else { return nil }
     return args[idx + 1]
+}
+
+if CommandLine.arguments.contains("--stdin-rgb565") || CommandLine.arguments.contains("--stdin-frames") {
+    do {
+        try runStdinWorker(records: CommandLine.arguments.contains("--stdin-frames"))
+        exit(0)
+    } catch {
+        fputs("GrokiVisionTracker frame worker failed: \(error)\n", stderr)
+        exit(1)
+    }
 }
 
 let urlString = argument("--endpoint") ?? "http://127.0.0.1:8766/track"

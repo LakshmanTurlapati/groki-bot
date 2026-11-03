@@ -47,6 +47,8 @@ PANEL_HTML = """<!DOCTYPE html>
     <div class="value">—</div><div class="sub"></div></div>
   <div class="block" id="blk-audio"><div class="name">音频</div>
     <div class="value">—</div><div class="sub"></div></div>
+  <div class="block" id="blk-camera"><div class="name">人脸跟踪</div>
+    <div class="value">—</div><div class="sub"></div></div>
 </div>
 <table id="tbl-counters">
   <tr><th>计数</th><th>值</th><th>计数</th><th>值</th></tr>
@@ -120,8 +122,8 @@ function render(st) {
 
   const w = st.wake_gate;
   setBlock("blk-wake",
-    w.available ? "ok" : "err",
-    w.available ? w.state : "不可用",
+    w.available ? "ok" : (w.state === "DISABLED" ? "warn" : "err"),
+    w.state || "UNAVAILABLE",
     w.last_wake_at ? "最近唤醒：" + fmtTs(w.last_wake_at) : "尚未唤醒");
 
   const a = st.audio;
@@ -131,6 +133,11 @@ function render(st) {
     a.last_device_audio_at === null ? "err" : (audioStale ? "warn" : "ok"),
     a.tts_active ? "TTS 播放中" : "空闲",
     "设备上行音频：" + fmtAgo(a.last_device_audio_at, now));
+
+  const f = st.face_tracking || {};
+  setBlock("blk-camera", f.camera_healthy ? "ok" : "warn",
+    f.camera_state || f.mode || "—",
+    "source=" + (f.source || "—") + "; " + (f.pause_reason || f.last_error || ""));
 
   const counters = [
     ["设备断连累计", st.device.disconnect_count],

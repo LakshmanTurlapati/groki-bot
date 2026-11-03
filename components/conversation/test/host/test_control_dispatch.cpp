@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "conversation/control_dispatch.hpp"
+#include "conversation/tracking_control.hpp"
 
 namespace {
 
@@ -142,6 +143,44 @@ void test_queue_holds_last_command_while_speaking()
     CHECK(!queue.finish());
 }
 
+void test_tracking_controls() {
+    using namespace stackchan::conversation;
+    for (const auto* mode : {"off", "tracking", "conversation"}) {
+        const std::string json = std::string{"{\"mode\":\""} + mode + "\"}";
+        auto* root = cJSON_Parse(json.c_str());
+        CHECK(parse_head_tracking_mode(root).has_value());
+        cJSON_Delete(root);
+    }
+    for (const auto* json : {R"({})", R"({"mode":true})", R"({"mode":"listening"})"}) {
+        auto* root = cJSON_Parse(json);
+        CHECK(!parse_head_tracking_mode(root));
+        cJSON_Delete(root);
+    }
+    auto* root = cJSON_Parse(R"({"frame_id":"abcdef1200000001","delta_yaw":100,"delta_pitch":-100})");
+    auto command = parse_head_track(root);
+    CHECK(command && command->delta_yaw == 15 && command->delta_pitch == -10 && !command->release);
+    cJSON_Delete(root);
+    root = cJSON_Parse(R"({"frame_id":"abcdef1200000001","release":true})");
+    command = parse_head_track(root);
+    CHECK(command && command->release && command->frame_id == "abcdef1200000001");
+    cJSON_Delete(root);
+    const char* malformed[] = {
+        R"({"frame_id":"abcdef1200000001","release":true,"delta_yaw":0})",
+        R"({"frame_id":"abcdef1200000001","release":"true"})",
+        R"({"frame_id":"abcdef1200000001","delta_yaw":0})",
+        R"({"frame_id":"abcdef1200000001","delta_yaw":"1","delta_pitch":1})",
+        R"({"frame_id":"abcdef1200000001","delta_yaw":1e999,"delta_pitch":1})",
+        R"({"frame_id":"","delta_yaw":1,"delta_pitch":1})",
+        R"({"frame_id":"abcdef120000000g","delta_yaw":1,"delta_pitch":1})",
+        R"({"frame_id":"abcdef1200000001000000000000000000000000000","release":true})",
+    };
+    for (const auto* json : malformed) {
+        root = cJSON_Parse(json);
+        CHECK(!parse_head_track(root));
+        cJSON_Delete(root);
+    }
+}
+
 } // namespace
 
 int main()
@@ -153,6 +192,7 @@ int main()
     test_other_types_pass_through();
     test_malformed_json_and_missing_type();
     test_queue_holds_last_command_while_speaking();
+    test_tracking_controls();
     if (g_failures == 0) {
         std::printf("[ OK ] control_dispatch: %d checks passed\n", g_checks);
         return 0;

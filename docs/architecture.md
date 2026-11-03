@@ -95,6 +95,8 @@ A wrong token is rejected with HTTP 401 (`ESP32 auth rejected` in the gateway lo
 
 The device encoder is 24 kbit/s, so uplink is about 3 KiB/s. Downlink is the same 60 ms grid at 24 kHz. USB Serial/JTAG ignores the gateway's 115200 baud placeholder and runs at USB full-speed. The serial pipe is full duplex. The conversation state machine is half-duplex, the same as Wi-Fi: the microphone is off while the speaker plays. Setup and the `STACKCHAN_USB_VOICE` switch: [gateway README, USB voice](../gateway/README.md#usb-voice-no-wi-fi-path-to-the-gateway).
 
+USB voice uses a ten-second firmware lease. The gateway renews it with `voice/ping` every two seconds; a ping cannot enable a stopped session. Lease expiry or an explicit `voice/mode` disable releases USB voice so the conversation task can reconnect over Wi-Fi. The gateway serializes incoming frames and discards queued frames when the connection changes.
+
 **Gemini Live.** The gateway keeps one Gemini Live session (`GEMINI_API_KEY`, model `gemini-3.8-live`, voice `Kore` by default) and gives Gemini a small set of function-calling tools: `end_conversation`, `get_current_datetime`, `ask_claude` when the `claude` CLI is installed (`STACKCHAN_ASK_CLAUDE=0` turns it off), and, when you turn them on, Mac control tools and `ask_grokbot`. With `STACKCHAN_GEMINI_DEVICE_TOOLS=1` Gemini also gets `move_head`, `set_avatar`, `set_all_leds` and `express_emotion`; because the Groki Bot firmware has no MCP, the gateway sends these as the XiaoZhi messages `head` (firmware newer than v0.2.1), `llm` with an emotion, and `led`.
 
 **HTTP on port 8766.**
@@ -105,10 +107,44 @@ The device encoder is 24 kbit/s, so uplink is about 3 KiB/s. Downlink is the sam
 | `GET /debug/panel` | The same status as a web page |
 | `POST /capture` | Photo upload from firmware that has a camera tool (needs `Authorization: Bearer` with `VISION_TOKEN` or `STACKCHAN_TOKEN`). Not used by the Groki Bot firmware. |
 | `POST /debug/inject-text` | Inject a text turn into the live session, token protected |
-| `POST /track` | Face positions from the Mac face tracker (see Face tracking below) |
+| `POST /track` | Face positions in explicit `STACKCHAN_FACE_TRACKER_SOURCE=mac` mode; robot mode returns 409 |
 | `POST /say` | Loopback only. Speak `text` through the live voice session (opens a USB session when that is the link) without the wake word |
 
-**Face tracking.** On a Mac with a camera, the gateway starts [tools/vision-tracker](../tools/vision-tracker/README.md) (`groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8`) and restarts it if it exits. The tracker finds the most confident face in each frame with Apple Vision and posts `{"x", "y", "width", "height", "confidence", "timestamp"}` (0..1 image coordinates) at most 8 times a second. `TrackingBridge` maps the position to head angles, smooths them, and sends them at up to 50 Hz as the XiaoZhi control message `{"type": "head", "yaw": <-90..90>, "pitch": <0..60>, "speed": <100..1000>}`, because the Groki Bot firmware has no MCP. The firmware clamps the angles to its servo limits and, while the robot is speaking, keeps only the last command and applies it when the reply ends. The gateway sends no head moves while the robot speaks or listens after the wake word; "look at me" / "stop looking at me" (`self.tracking.start` / `self.tracking.stop`) switch following on and off. `/debug/status` shows the state under `face_tracking`. Setup: [gateway README, Face tracking](../gateway/README.md#face-tracking).
+**Face tracking.** The gateway captures 320×240 frames from the CoreS3, using quality-80 JPEG over USB or RGB565BE over HTTP, and feeds them to a local Swift/Apple Vision worker. The default capture ceiling is 4 Hz; actual throughput includes sensor, transport, and servo settling. The worker associates face rectangles across frames. Angular image-error corrections use an estimated camera field of view, tapered gain near center, and a small noise deadzone. Firmware validates measured capture pose, command revision, expiry, and single-use frame tokens before applying each correction. Tracking uses the fast spring profile and holds motor torque between frames. Renderer/camera mutual exclusion replaces a fixed tracking delay, and the CoreS3 runs at its rated 240 MHz. Conversation, touch, and manual-control preemption remain active. Setup: [gateway README](../gateway/README.md#face-tracking).
+
+The robot-camera protocol uses these additional interfaces:
+
+| Interface | Contract |
+|---|---|
+| Device hello | `features.camera_tracking_v1=true` when tracking is available; `camera_tracking_v2=true` adds motion-aware USB captures and binary camera chunks |
+| Device HTTP capture | `GET /api/camera/capture?tracking=1`, existing settings Basic Auth, 320×240 `rgb565be`, 153,600 bytes, opaque `X-Frame-Id`; 409 for paused/moving/busy, 503 for capture or feedback failure |
+| Gateway → device mode | `{"type":"head_tracking","mode":"tracking"}`; `conversation` invalidates pending frames and freezes automatic idle/tracking motion; `off` restores ordinary idle behavior |
+| Gateway → device correction | `{"type":"head_track","frame_id":"…","delta_yaw":2,"delta_pitch":1}`; at most one correction per token, bounded to ±15° yaw/±10° pitch and configured servo limits |
+| Gateway → device no-face release | `{"type":"head_track","frame_id":"…","release":true}`; releases the reservation without moving |
+
+USB sessions request snapshots through `camera/capture` on the shared serial
+link. With v2, CRC-protected type-4 packets carry a little-endian request id,
+offset, and at most 2048 image bytes. Legacy `camera/chunk` notifications carry
+base64 chunks. Both finish with frame metadata. The gateway permits one snapshot at a time and rejects
+incomplete, oversized, out-of-order, or superseded transfers. USB voice frames
+remain separate and can interleave with camera chunks. This path requires no
+robot-to-Mac Wi-Fi route. Wi-Fi sessions use the HTTP capture endpoint.
+
+V2 capture brackets the retained image with measured head positions. It uses
+their midpoint as the estimated capture pose and rejects more than 3° of
+movement across the bracket. Feedback must agree with the commanded motion
+within 4.5° while automatically tracking. Corrections refer to the capture
+heading, preserving velocity when retargeting, with yaw/pitch speeds bounded
+to 35°/s and 28°/s and acceleration to 140°/s² and 110°/s². The gateway filters
+absolute face bearings with a speed-adaptive filter and center hysteresis.
+
+The gateway discards results older than one second over HTTP or 1.8 seconds over USB; firmware tokens expire
+after two seconds (1.2 seconds for motion-aware captures) and are invalidated by manual commands, mode changes, or
+disconnects. Commands are best effort, without a physical-motion acknowledgment.
+Only the servo task reads servo feedback. Tracking capture has a 500 ms useful
+work budget checked between driver operations; a blocked camera driver call
+can still take four seconds before cleanup. The gateway waits for that request
+to finish or time out, then backs off rather than accumulating captures.
 
 **MCP.** `uv run stackchan-mcp` is a stdio MCP server and, in the same process, the WebSocket and HTTP servers above. Claude Code or Claude Desktop can start it (the gateway runs while the client is open), or `scripts/run_stackchan_gateway_launchd.sh` keeps it running as a background service. With the Groki Bot firmware, `speak` and `get_status` work; hardware tools return an error because of `features.mcp=false`.
 

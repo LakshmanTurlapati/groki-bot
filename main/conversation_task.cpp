@@ -245,8 +245,7 @@ public:
     {
         // XiaoZhi is keyed by its server URL rather than an API key; the other
         // providers need a non-empty api_key.
-        const bool disabled = provider_ == config::Provider::XiaoZhi ? xiaozhi_url_.empty()
-                                                                     : api_key_.empty();
+        const bool disabled = provider_ != config::Provider::XiaoZhi && api_key_.empty();
         if (disabled) {
             ESP_LOGW(kTag, "credentials empty for selected provider — conversation disabled");
             vTaskDelete(nullptr);
@@ -259,7 +258,7 @@ public:
             // voice/mode on the serial link) lets the same client start when
             // the gateway is not reachable over the network.
             ESP_LOGI(kTag, "waiting for Wi-Fi or USB voice...");
-            while (!wifi_is_connected() && !conv::usb_voice_requested()) {
+            while ((!wifi_is_connected() || xiaozhi_url_.empty()) && !conv::usb_voice_requested()) {
                 vTaskDelay(pdMS_TO_TICKS(200));
             }
         } else {
@@ -301,7 +300,30 @@ public:
         } else {
             client_ = std::make_unique<conv::OpenAiRealtimeClient>(api_key_);
         }
-        client_->set_event_callback([this](const conv::ConversationEvent& ev) { enqueue_event(ev); });
+        client_->set_event_callback([this](const conv::ConversationEvent& ev) {
+            // Control permission changes must not wait behind streamed audio.
+            if (ev.type == conv::ConversationEventType::HeadTrackingModeChanged) {
+                const auto mode = ev.head_tracking_mode == conv::HeadTrackingMode::Tracking ? TrackingMode::Tracking
+                                  : ev.head_tracking_mode == conv::HeadTrackingMode::Conversation
+                                      ? TrackingMode::Conversation
+                                      : TrackingMode::Off;
+                state_.servo.set_tracking_mode(mode);
+                return;
+            }
+            if (ev.type == conv::ConversationEventType::HeadTrack) {
+                const auto& command = ev.head_tracking_command;
+                (void)state_.servo.submit(HeadControl::Operation::Apply, now_ms(), command.frame_id,
+                                          {command.delta_yaw, command.delta_pitch}, command.release);
+                return;
+            }
+            if (ev.type == conv::ConversationEventType::HeadPose)
+                state_.servo.preempt_tracking(now_ms());
+            if (ev.type == conv::ConversationEventType::StateChanged &&
+                (ev.state == conv::ConversationState::Error || ev.state == conv::ConversationState::Idle ||
+                 ev.state == conv::ConversationState::Connecting))
+                state_.servo.disconnect_tracking();
+            enqueue_event(ev);
+        });
 
         (void)connect_with_retries("initial connect", /*allow_audio_abort=*/false);
 
@@ -320,6 +342,7 @@ public:
                     M5.Mic.end();
                     M5.Speaker.end();
                     state_.face.mouth_open.store(0.0f, std::memory_order_relaxed);
+                    state_.servo.disconnect_tracking();
                     client_->stop();
                     vTaskDelay(pdMS_TO_TICKS(500));
                     flush_events();
@@ -398,6 +421,7 @@ private:
         cfg.instructions = system_prompt_.empty() ? kInstructions : system_prompt_;
         // Extra HTTP headers (e.g. Cloudflare Access token) for the WS upgrade.
         cfg.extra_headers = extra_headers_;
+        cfg.camera_tracking_v1 = state_.servo.supports_tracking();
         if (provider_ == config::Provider::Gemini) {
             // Gemini Live model + voice. The model is namespaced as
             // "models/..."; the client prepends that for us when missing.
@@ -422,12 +446,15 @@ private:
         config_ = cfg;
 
         set_local(Local::Init);
+        const bool request_usb = conv::usb_voice_requested();
+        const auto request_generation = conv::usb_voice_generation();
         if (xiaozhi_ != nullptr) {
-            xiaozhi_->set_usb_transport(conv::usb_voice_requested());
+            xiaozhi_->set_usb_transport(request_usb);
         }
         auto r = client_->start(config_);
         if (r && xiaozhi_ != nullptr) {
-            usb_active_ = conv::usb_voice_requested();
+            usb_active_ = request_usb;
+            usb_generation_ = request_generation;
         }
         if (!r) {
             ESP_LOGE(kTag, "client start failed: %d", static_cast<int>(r.error()));
@@ -441,12 +468,15 @@ private:
         if (provider_ == config::Provider::XiaoZhi && conv::usb_voice_requested()) {
             return true;
         }
-        if (wifi_is_connected()) {
+        if (wifi_is_connected() && (provider_ != config::Provider::XiaoZhi || !xiaozhi_url_.empty())) {
             return true;
         }
         ESP_LOGW(kTag, "Wi-Fi disconnected; waiting before reconnecting the session");
         state_.conv.status.store(ConvStatus::WaitingWifi, std::memory_order_relaxed);
-        while (!wifi_is_connected()) {
+        while (!wifi_is_connected() || (provider_ == config::Provider::XiaoZhi && xiaozhi_url_.empty())) {
+            if (provider_ == config::Provider::XiaoZhi && conv::usb_voice_requested()) {
+                return true;
+            }
             if (allow_audio_abort &&
                 state_.audio_stream_active.load(std::memory_order_acquire)) {
                 ESP_LOGI(kTag, "session reconnect paused: BLE audio in use");
@@ -539,6 +569,7 @@ private:
             vTaskDelay(kI2sSettle);
         }
         state_.face.mouth_open.store(0.0f, std::memory_order_relaxed);
+        state_.servo.disconnect_tracking();
         client_->stop();
         // The shutdown fires WEBSOCKET_EVENT_DISCONNECTED (and sometimes a
         // trailing ERROR) which the trampoline turns into transport-error
@@ -600,7 +631,8 @@ private:
         if (xiaozhi_ == nullptr || local_ == Local::Yielded) {
             return;
         }
-        if (conv::usb_voice_requested() == usb_active_) {
+        if (conv::usb_voice_requested() == usb_active_ &&
+            (!usb_active_ || conv::usb_voice_generation() == usb_generation_)) {
             return;
         }
         ESP_LOGI(kTag, "voice link -> %s", conv::usb_voice_requested() ? "usb" : "websocket");
@@ -1111,6 +1143,9 @@ private:
             if (auto ready = head_commands_.receive(head, local_ == Local::Speaking)) apply_head(*ready);
             break;
         }
+        case conv::ConversationEventType::HeadTrackingModeChanged:
+        case conv::ConversationEventType::HeadTrack:
+            break; // Handled directly by the transport callback.
 
         case conv::ConversationEventType::LedColor: {
             const auto solid = led_runtime::from_rgb(ev.led_r, ev.led_g, ev.led_b);
@@ -1133,10 +1168,7 @@ private:
     // pose before the next command arrives.
     void apply_head(const conv::HeadCommand& head)
     {
-        state_.servo.speed_override.store(head.speed, std::memory_order_relaxed);
-        state_.servo.target_yaw_deg.store(head.yaw, std::memory_order_relaxed);
-        state_.servo.target_pitch_deg.store(head.pitch, std::memory_order_relaxed);
-        state_.servo.head_hold_until_ms.store(now_ms() + 2000, std::memory_order_relaxed);
+        state_.servo.set_target({head.yaw, head.pitch}, head.speed, HeadSource::Manual, now_ms());
     }
 
     // ---- tool dispatch -----------------------------------------------------
@@ -1300,8 +1332,7 @@ private:
         if (cJSON_IsNumber(yaw) && cJSON_IsNumber(pitch)) {
             const float yaw_deg = std::clamp(static_cast<float>(yaw->valuedouble), -40.0f, 40.0f);
             const float pitch_deg = std::clamp(static_cast<float>(pitch->valuedouble), -10.0f, 25.0f);
-            state_.servo.target_yaw_deg.store(yaw_deg, std::memory_order_relaxed);
-            state_.servo.target_pitch_deg.store(pitch_deg, std::memory_order_relaxed);
+            state_.servo.set_target({yaw_deg, pitch_deg}, 0, HeadSource::Manual, now_ms());
             result = R"({"ok":true})";
         } else {
             result = R"({"ok":false,"error":"yaw_deg and pitch_deg required"})";
@@ -1335,6 +1366,7 @@ private:
     std::unique_ptr<conv::ConversationService> client_;
     conv::XiaoZhiClient* xiaozhi_{nullptr};
     bool usb_active_{false};
+    std::uint32_t usb_generation_{0};
     QueueHandle_t event_queue_{nullptr};
 
     // Per-provider audio rates set in the constructor.

@@ -433,7 +433,9 @@ async def test_proxy_wake_and_close_events_reach_debug_status():
         activity_rms_threshold=1000.0,
         clock=lambda: now,
     )
-    proxy._wake_gate = gate
+    proxy.wake_gate_factory = lambda: gate
+    await proxy._start_wake_gate()
+    await proxy._wake_runner.wait_initialized()
 
     await proxy._forward_gated_device_pcm(b"\x00\x00")
     assert st.snapshot()["wake_gate"]["state"] == "LISTENING"
@@ -443,6 +445,7 @@ async def test_proxy_wake_and_close_events_reach_debug_status():
     await proxy._forward_gated_device_pcm(b"\x00\x00")
     assert st.snapshot()["wake_gate"]["state"] == "DORMANT"
     assert st.snapshot()["wake_gate"]["close_count"] == 1
+    await proxy.stop()
 
 
 def test_bridge_tool_call_logging_reaches_debug_status():

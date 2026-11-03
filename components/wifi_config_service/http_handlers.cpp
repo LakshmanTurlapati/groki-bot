@@ -1125,13 +1125,23 @@ esp_err_t handle_camera_capture_get(httpd_req_t* req)
                 std::strcmp(val, "colorbar") == 0) {
                 options.colorbar = true;
             }
+            if (httpd_query_key_value(query, "tracking", val, sizeof(val)) == ESP_OK && std::strcmp(val, "1") == 0) {
+                options.tracking = true;
+            }
         }
     }
 
     std::vector<std::uint8_t> frame;
     std::size_t w = 0, h = 0;
     std::string format = "gray8";
-    if (!sink(options, frame, w, h, format) || frame.empty()) {
+    CameraCaptureMetadata metadata;
+    if (options.tracking && (options.raw_bayer || options.colorbar)) {
+        return send_error(req, "400 Bad Request", "tracking requires an ordinary optical frame");
+    }
+    if (!sink(options, frame, w, h, format, metadata) || frame.empty()) {
+        if (metadata.tracking_busy) {
+            return send_error(req, "409 Conflict", "tracking paused, moving, busy, or capture superseded");
+        }
         return send_error(req, "503 Service Unavailable",
                           "capture failed (camera busy or sensor error)");
     }
@@ -1143,10 +1153,13 @@ esp_err_t handle_camera_capture_get(httpd_req_t* req)
     httpd_resp_set_hdr(req, "X-Frame-Width", wbuf);
     httpd_resp_set_hdr(req, "X-Frame-Height", hbuf);
     httpd_resp_set_hdr(req, "X-Frame-Format", format.c_str());
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (!metadata.frame_id.empty())
+        httpd_resp_set_hdr(req, "X-Frame-Id", metadata.frame_id.c_str());
     // Expose the custom headers to fetch() — without this the browser hides
     // them from cross-check reads even same-origin in some UA versions.
     httpd_resp_set_hdr(req, "Access-Control-Expose-Headers",
-                       "X-Frame-Width, X-Frame-Height, X-Frame-Format");
+                       "X-Frame-Width, X-Frame-Height, X-Frame-Format, X-Frame-Id");
     httpd_resp_send(req, reinterpret_cast<const char*>(frame.data()),
                     static_cast<ssize_t>(frame.size()));
     return ESP_OK;

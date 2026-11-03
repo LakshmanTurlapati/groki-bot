@@ -37,6 +37,13 @@ class SpringAxis {
 public:
     void reset(float value) noexcept;
     void retarget(float target, std::uint16_t speed) noexcept;
+    void set_motion_limits(float velocity, float acceleration) noexcept {
+        max_velocity_ = velocity;
+        max_acceleration_ = acceleration;
+    }
+    float velocity() const noexcept {
+        return velocity_deg_s_;
+    }
     bool step(float dt_s, float min_deg, float max_deg) noexcept;
 
     bool initialized() const noexcept { return initialized_; }
@@ -49,6 +56,7 @@ private:
     float target_deg_{0.0f};
     float current_deg_{0.0f};
     float velocity_deg_s_{0.0f};
+    float max_velocity_{0.0f}, max_acceleration_{0.0f};
     SpringParams params_{spring_params_for_speed(200)};
 };
 

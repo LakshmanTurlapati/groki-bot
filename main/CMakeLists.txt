@@ -11,6 +11,8 @@ set(_main_priv_reqs
     espressif__esp_audio_codec
     espressif__esp-sr
     json
+    mbedtls
+    espressif__esp_new_jpeg
     M5Unified
     M5GFX
     esp_timer

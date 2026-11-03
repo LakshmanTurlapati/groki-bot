@@ -9,7 +9,7 @@
 - **Expression engine**: aora eye-ring contours (48 points per eye), 15 expressions, blink, ring cycling and four-weight blending. The body layer keeps breathing, happy bounce, squash while speaking, shy floating hearts and blush.
 - **AI voice conversation**: WebSocket connection to OpenAI Realtime, Google Gemini Live or a XiaoZhi server. Microphone audio goes up; reply audio drives the mouth. The half-duplex CoreS3 mutes the microphone while speaking; tap the screen or touch the head to interrupt a reply (barge-in).
 - **Servo head motion**: SCS0009 yaw and pitch with a trapezoidal velocity profile.
-- **Face tracking** (with the gateway on a Mac): a Mac camera tracker finds your face and the gateway turns the head to follow it; following pauses while the robot talks or listens. Setup: [gateway README, Face tracking](../gateway/README.md#face-tracking).
+- **Face tracking** (with the gateway on a Mac): the robot camera supplies frames over USB or Wi-Fi, Apple Vision finds your face, and the robot turns its head to follow it. Following pauses during conversation. Setup: [gateway README, Face tracking](../gateway/README.md#face-tracking).
 - **Head touch**: Si12T three-zone capacitive touch (front, middle, back); stroking switches to the shy face (Affection).
 - **Speech balloon**: reply text on a rounded white panel at the bottom of the screen; long text scrolls as a marquee.
 - **Three setup paths**: BLE (NimBLE GATT), Wi-Fi STA (mDNS HTTP), SoftAP with a captive portal (iOS friendly).

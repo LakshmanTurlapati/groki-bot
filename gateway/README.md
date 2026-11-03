@@ -136,7 +136,7 @@ With the explicit bot name and matching IDs, Grok directly uses native `send_tas
 
 If the desktop sandbox is unavailable, audio stays usable while the native channel retries in the background. Task dispatching and conversation search are refused until presence and the event stream are ready. Acceptance means the task was accepted, not that a desktop message was visibly delivered. Typed-message subscriptions can still fail; they reconnect independently and do not replay messages missed during a disconnect. No claims of full feature parity or acoustic barge-in are made. See [validation](GBOT_VOICE_VALIDATION.md) and [latency methods](VOICE_LATENCY_BENCHMARK.md).
 
-### Wake word model (optional, about 33 MB)
+### Wake word model (about 33 MB)
 
 ```bash
 mkdir -p models/kws && cd models/kws
@@ -146,9 +146,15 @@ rm sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
 cd ../..
 ```
 
-Without the model the gateway still works, but it sends everything the
-microphone hears to the selected voice backend while the robot is connected. Check the model
-offline (macOS, uses the `say` command):
+If the model or runtime is unavailable, the gateway stays connected but blocks
+microphone audio from the voice backend. It reports `UNAVAILABLE` and retries
+after 2, 4, 8, 16, then 30 seconds, continuing until recovery. Recovery requires
+a fresh wake word; audio received during failure is discarded. Explicit
+`STACKCHAN_WAKE_WORD=0` reports `DISABLED` and permits microphone passthrough.
+This gate applies to the Gemini and Grok-login backends, not XiaoZhi cloud
+passthrough. On-device WakeNet is not needed for gateway voice.
+
+Check the model offline (macOS, uses the `say` command):
 
 ```bash
 uv run --all-extras python scripts/kws_offline_repro.py --generate-say
@@ -270,8 +276,9 @@ then ride the serial port that `STACKCHAN_USB_TRANSPORT` already uses for
    STACKCHAN_VOICE_BACKEND=gbot   # or gemini
    ```
 
-3. The conversation provider on the robot stays "XiaoZhi 服务器". The Wi-Fi
-   URL is still used when USB voice mode is off. With the cable connected and
+3. The conversation provider on the robot stays "XiaoZhi 服务器". A saved Wi-Fi
+   URL is optional for USB voice; when present, it is used when USB voice mode is off.
+   With the cable connected and
    no WebSocket session, the gateway sends `voice/mode` and the robot answers
    with the usual hello, then streams 16 kHz Opus up and plays 24 kHz Opus down.
 
@@ -283,7 +290,7 @@ then ride the serial port that `STACKCHAN_USB_TRANSPORT` already uses for
      -d '{"text": "the build finished"}'
    ```
 
-   `/say` is rejected unless the TCP peer is loopback. It opens or reuses the
+   `/say` accepts local callers and rejects cross-origin browser requests. It opens or reuses the
    voice session and calls the same `speak_text` path as a live Gemini or
    Grok session. A robot that is already connected over Wi-Fi keeps that
    session; `/say` does not move it to USB.
@@ -303,109 +310,117 @@ Limits:
   seconds (default 8) before signaling, so a robot that can reach the gateway
   over Wi-Fi keeps the WebSocket. Set `1` when the cable is the only path.
   Set `0` to keep USB as tool calls only. `/say` does not wait out the defer.
+  A healthy USB voice session does not periodically switch back to probe Wi-Fi;
+  disable USB voice to return to the saved WebSocket connection.
+- The gateway renews the USB voice lease every two seconds. If the cable is
+  removed or the gateway stops responding, the lease expires after ten seconds
+  and the firmware returns to its saved Wi-Fi WebSocket connection. An orderly
+  gateway shutdown releases the lease immediately.
 
 ## Face tracking
 
-The robot turns its head to follow your face. A small Mac program,
-[tools/vision-tracker](../tools/vision-tracker/README.md), watches the camera
-with Apple Vision and posts the face position to the gateway at
-`http://127.0.0.1:8766/track`; the gateway turns it into head angles and sends
-them to the robot. Camera frames never leave the Mac and are not saved.
+The gateway follows faces seen by the **CoreS3 camera** by default. The robot
+captures a 320×240 image; [the Swift detector](../tools/vision-tracker/README.md)
+runs Apple Vision on the Mac. Frames stay in memory and are not uploaded to
+the voice provider. The Mac webcam is not opened or requested.
 
-What you need:
+### Setup
 
-- A Mac (macOS 13 or later) with a camera: the built-in one, a Studio Display,
-  an iPhone as Continuity Camera, or a USB webcam.
-- A CoreS3 with the Stack-chan base and its two head servos, connected to the
-  gateway (step 4 above).
-- Firmware that handles the gateway's `head` message: a release newer than
-  v0.2.1, or a build from `main`. Older firmware ignores the message and the
-  head does not move.
-- Swift 5.9 or later to build the tracker (Xcode, or the Command Line Tools:
-  `xcode-select --install`).
+Use macOS 13 or later, Swift 5.9 or later, a CoreS3 with head servos, and firmware
+advertising `camera_tracking_v1`. Older firmware remains usable for voice but
+reports `unsupported_firmware` for robot-camera tracking.
 
-### Build the tracker
+Robot-camera tracking uses the Gemini or Grok-login gateway backend, which
+provides conversation pause events. The separate `xiaozhi` cloud-passthrough
+backend keeps voice behavior unchanged and reports `unsupported_voice_backend`
+for robot tracking; its explicit Mac-camera mode remains available.
 
-From the repository root:
+Build the detector once from the repository root:
 
 ```bash
 cd tools/vision-tracker
 swift build -c release
 ```
 
-This produces `tools/vision-tracker/.build/release/groki-vision-tracker`,
-which is where the gateway looks for it.
+Start the gateway normally. With USB voice active, snapshots share the USB
+link, so guest Wi-Fi isolation does not prevent tracking. Enable
+`STACKCHAN_USB_TRANSPORT=1` and `STACKCHAN_USB_VOICE=1` for this path.
+Otherwise the robot must reach the gateway WebSocket and the Mac must reach
+the robot's HTTP settings service.
 
-### Allow camera access
+For Wi-Fi sessions, the gateway discovers the HTTP origin from the active bot connection. For a
+routed setup, set `STACKCHAN_CAMERA_URL=http://<robot-address>` (origin only).
+If the bot's HTTP settings have a password, set `STACKCHAN_CAMERA_PASSWORD` to
+that password. This is separate from the gateway's `STACKCHAN_TOKEN`.
+`VISION_URL` remains the photo-upload destination and is not used here.
 
-macOS asks for camera permission the first time the tracker opens the camera,
-and the permission belongs to the app that started it: your terminal (or
-Claude Code's terminal, or Claude Desktop) when the gateway runs from there.
-To get the prompt once, run the tracker by hand in the terminal you will
-start the gateway from, click Allow, then stop it with Ctrl-C:
+Capture defaults to a four-frame-per-second ceiling. `STACKCHAN_CAMERA_FPS`
+can reduce that rate or raise it to a maximum of eight; the effective rate
+depends on acquisition, transfer, and motion checks. USB snapshots use quality-80 JPEG to
+reduce transfer time. Each capture, detection, and correction finishes before
+another cycle starts. Late results are discarded;
+connection or detector failures retry with a delay, without switching cameras.
+
+See [tracking research and measurements](../docs/robot-camera-tracking.md)
+for the controller design, hardware results, and a live benchmark command.
+
+### Behavior and diagnostics
+
+Open <http://127.0.0.1:8766/debug/status> and inspect `face_tracking` for the
+source, capture health, last frame/face time, pause reason, and last error.
+A healthy image containing no face is different from a camera failure.
+`capture_transport` identifies USB or HTTP; `frames_processed`, `faces_detected`,
+and `last_face` show whether capture and detection are progressing.
+
+Move in front of the robot camera: bounded angular corrections bring your face
+toward the image center. A centered face holds the current head angle. The
+firmware checks measured servo position and a single-use frame token before
+moving, so an old detection cannot override a newer touch or head command.
+The controller converts image offset to camera angle, tapers gain near center,
+and keeps motor holding torque during active following. The detector keeps a
+consistent face target across frames. Losing the face releases tracking;
+ordinary idle motion resumes after the existing head hold expires.
+
+Firmware advertising `camera_tracking_v2` also supports motion-aware USB
+captures. Measured head positions bracket the retained image, and corrections
+refer to its estimated capture heading. Excessive movement during capture is
+rejected. Turns preserve velocity when a new target arrives, with bounded
+speed and acceleration. An adaptive angle filter suppresses small detection
+jitter and accounts for the camera's own rotation. Binary camera packets
+avoid base64 overhead while sharing the CRC-protected voice stream.
+
+`STACKCHAN_CAMERA_TRACKING_MOTION=0` selects settled captures;
+`STACKCHAN_CAMERA_BINARY=0` selects legacy JSON/base64 camera chunks.
+`STACKCHAN_CAMERA_JPEG_QUALITY` defaults to 80 and accepts 60-90. Older
+firmware automatically uses its original capture and transfer behavior.
+
+Automatic tracking and idle motion pause throughout the actual wake-word
+conversation window and speech. Dormant microphone streaming still permits
+tracking. Manual commands remain available. Corrections captured before a
+pause or reconnect are discarded, not replayed after speech.
+
+Say “look at me” or “stop looking at me” to toggle head following. Set
+`STACKCHAN_HEAD_FOLLOW_DEFAULT=0` to start with following off, or
+`STACKCHAN_FACE_TRACKER_AUTOSTART=0` to disable the detector. Robot capture
+also stops while head following is off.
+
+### Use a Mac webcam explicitly
+
+Set `STACKCHAN_FACE_TRACKER_SOURCE=mac` to retain the previous webcam path.
+Only this mode accepts detections posted to `/track` and requires macOS
+camera permission. Set `STACKCHAN_FACE_TRACKER_CAMERA` to part of the camera
+name; otherwise the detector prefers a Studio Display, then an iPhone, then
+the first available camera.
+
+To grant permission, run the built `groki-vision-tracker` from the terminal
+that starts the gateway and allow the camera prompt. If needed, enable that
+terminal under System Settings → Privacy & Security → Camera. A manually
+started webcam helper requires `STACKCHAN_FACE_TRACKER_SOURCE=mac` on the
+gateway and `STACKCHAN_FACE_TRACKER_AUTOSTART=0` to avoid a second helper:
 
 ```bash
-tools/vision-tracker/.build/release/groki-vision-tracker
+tools/vision-tracker/.build/release/groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8
 ```
-
-If you missed the prompt, or the gateway runs as a background service, allow
-the app in System Settings → Privacy & Security → Camera, then restart the
-gateway. Without permission the tracker exits with code 2 and the gateway
-retries with a growing delay (up to 5 minutes).
-
-### Start it
-
-Nothing extra: the gateway starts the tracker when it starts and restarts it
-if it exits. The head follows faces from the start. If the tracker has not
-been built, the gateway logs one line and runs normally without face
-tracking:
-
-```
-face tracker unavailable: executable not found at .../tools/vision-tracker/.build/release/groki-vision-tracker (build with: cd tools/vision-tracker && swift build -c release); the head will not follow faces
-```
-
-To run the tracker yourself instead, set `STACKCHAN_FACE_TRACKER_AUTOSTART=0`
-and start it with
-`groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8`.
-
-### Check that it works
-
-1. The gateway log shows `face tracker started pid=<pid> endpoint=http://127.0.0.1:8766/track`,
-   and the tracker prints `Vision tracker camera: <camera name>`.
-2. Sit in front of the camera and open <http://127.0.0.1:8766/debug/status>.
-   Under `face_tracking`: `tracker_running` is `true`, `face_reported` turns
-   `true` and `last_face_at` keeps updating while the camera sees you,
-   `head_follow` is `true` and `mode` is `idle`.
-3. Move left and right: the head turns toward you and keeps following, within
-   the robot's servo limits (by default ±40° left/right, -10° to +25° up/down).
-   When the camera loses your face, the head stops following and after about
-   two seconds the robot's own idle head motion takes over again.
-
-### While you talk
-
-Following pauses by design during a conversation: the gateway sends no head
-moves while the robot speaks (`mode` is `working`) or while it listens after
-the wake word (`mode` is `quiet`), so servo noise and motion do not get in
-the way of the conversation. It follows again with the next detection once
-the conversation is over. The firmware also holds a head command that arrives
-while the robot is speaking and applies it when the reply ends.
-
-### Turn head follow on and off
-
-- By voice (Gemini or Grok gateway backend): "look at me" turns following on, "stop looking at
-  me" turns it off. Face detection keeps running either way.
-- `STACKCHAN_HEAD_FOLLOW_DEFAULT=0` starts the gateway with following off, for
-  a robot without head servos or when you want the head still.
-- `STACKCHAN_FACE_TRACKER_AUTOSTART=0` does not start the tracker at all, for
-  a computer without a camera.
-
-### Choose a camera
-
-Without a setting the tracker uses a Studio Display camera first, then an
-iPhone (Continuity Camera), then the first camera macOS lists. To pick one,
-set `STACKCHAN_FACE_TRACKER_CAMERA` to part of its name (case-insensitive),
-for example `STACKCHAN_FACE_TRACKER_CAMERA=FaceTime`. The tracker prints the
-cameras it found when it starts.
 
 ## Optional: Grok Bot hand-off
 
@@ -469,9 +484,16 @@ reconnect the MCP client, after a change).
 | `STACKCHAN_WAKE_PHRASE`, `STACKCHAN_WAKE_KEYWORD` | `hi grok` | Wake word; see [Changing the wake word](#changing-the-wake-word). `STACKCHAN_WAKE_PHRASE=hey groki` alone switches to "Hey Groki" |
 | `STACKCHAN_WAKE_IDLE_S` | `30` | Silence before the listening window closes |
 | `STACKCHAN_MAC_CONTROL` | off | `1` lets voice commands control this Mac (see Safety) |
-| `STACKCHAN_FACE_TRACKER_AUTOSTART` | on | `0` does not start the Mac face tracker (computer without a camera) |
+| `STACKCHAN_FACE_TRACKER_SOURCE` | `robot` | CoreS3 camera; `mac` explicitly selects a webcam |
+| `STACKCHAN_CAMERA_FPS` | `4` | Robot capture rate ceiling, greater than zero and at most 8 Hz; effective rate includes servo settling |
+| `STACKCHAN_CAMERA_USB_FORMAT` | `jpeg` | USB camera encoding; `rgb565be` retains uncompressed diagnostics |
+| `STACKCHAN_TRACKING_HFOV`, `STACKCHAN_TRACKING_VFOV` | `60`, `46.8` | Estimated horizontal/vertical lens angles in degrees; configurable after measured calibration |
+| `STACKCHAN_TRACKING_GAIN` | `0.9` | Angular correction gain, 0.1–1; reduced automatically near center |
+| `STACKCHAN_CAMERA_URL` | connection peer | Optional robot HTTP(S) origin; no path or credentials |
+| `STACKCHAN_CAMERA_PASSWORD` | empty | Robot HTTP settings password, separate from the gateway token |
+| `STACKCHAN_FACE_TRACKER_AUTOSTART` | on | `0` disables the face detector |
 | `STACKCHAN_FACE_TRACKER_BIN` | `tools/vision-tracker/.build/release/groki-vision-tracker` | Face tracker executable |
-| `STACKCHAN_FACE_TRACKER_CAMERA` | empty | Part of the camera name to use; empty uses the tracker's default order |
+| `STACKCHAN_FACE_TRACKER_CAMERA` | empty | Mac source only: part of the webcam name |
 | `STACKCHAN_HEAD_FOLLOW_DEFAULT` | on | `0` starts with head follow off; "look at me" turns it on |
 | `STACKCHAN_GEMINI_DEVICE_TOOLS` | off | `1` gives both voice backends face/LED/head tools. Firmware with device MCP gets them as MCP calls; the Groki Bot firmware gets them as XiaoZhi emotion, `led` and `head` messages (`head` needs firmware newer than v0.2.1) |
 | `STACKCHAN_USB_TRANSPORT` | off | `1` enables the USB serial channel (tool calls, and voice when USB voice mode is on); it locks `/dev/cu.usbmodem*` |
@@ -520,7 +542,7 @@ reconnect the MCP client, after a change).
 | Wake word never triggers | Model downloaded to `models/kws`? Log shows `KWS ready`? Try `STACKCHAN_KWS_THRESHOLD=0.03`, or run `scripts/kws_offline_repro.py`. `STACKCHAN_WAKE_WORD=0` turns the gate off. |
 | `sherpa-onnx unavailable` / `Library not loaded: libonnxruntime` | Run `uv sync --all-extras` again; it installs `sherpa-onnx-core`, which ships the runtime. |
 | `Could not find Opus library` | Install Opus (`brew install opus` or `apt install libopus0`). |
-| Head does not follow faces | `/debug/status` → `face_tracking`. `null`: gateway too old or not restarted. `tracker_running: false`: build the tracker, or check the log for `face tracker exited returncode=2` (no camera or no camera permission, see [Allow camera access](#allow-camera-access)). `face_reported: false`: the camera does not see a face. `head_follow: false`: say "look at me". Everything fine but the head is still: the firmware is older than the `head` message; update it. |
+| Head does not follow faces | Check `/debug/status` → `face_tracking`: `unsupported_firmware` needs tracking-capable firmware; `detector_missing` needs a Swift build; `auth_required` needs the robot HTTP password; capture failures need Mac→bot connectivity. `no_face` means the camera works but sees no face. `head_follow: false`: say "look at me". Mac webcam mode additionally requires camera permission. |
 | Flashing fails with "port busy" | Stop the gateway if you enabled `STACKCHAN_USB_TRANSPORT`. |
 | USB cable is in, but no voice | Provider must be XiaoZhi. `STACKCHAN_USB_TRANSPORT=1`. `STACKCHAN_USB_VOICE=1` if you do not want to wait for the Wi-Fi defer. `/debug/status` → `device.transport` is `usb`. `/say` from another machine returns `local only`. |
 | `.env` change has no effect | Restart the gateway; with setup A, reconnect the MCP server (`/mcp` in Claude Code). |

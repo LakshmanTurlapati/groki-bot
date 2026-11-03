@@ -4,8 +4,16 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace stackchan::conversation {
+
+enum class HeadTrackingMode : unsigned char { Off, Tracking, Conversation };
+struct HeadTrackingCommand {
+    std::string frame_id;
+    float delta_yaw = 0, delta_pitch = 0;
+    bool release = false;
+};
 
 // Head pose requested by the gateway's `head` control message. Angles are in
 // degrees; speed is the servo speed hint (100..1000, 0 = default), not a

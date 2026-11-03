@@ -7,7 +7,7 @@ Each path adds to the one before it. Start with path 1.
 | | What you get | What you need |
 |---|---|---|
 | **1. Firmware only** (start here) | Voice conversation with the robot through OpenAI Realtime or Google Gemini Live, using your own API key | The robot, a USB-C cable, desktop Chrome or Edge, an OpenAI or Gemini API key |
-| **2. + gateway** | Computer-side voice and "Hi Grok" wake word, with Gemini Live or Grok login voice; optional Mac face tracking and MCP | Existing firmware, a computer on the same Wi-Fi, and the chosen backend configuration; see [gateway/](../gateway/README.md) |
+| **2. + gateway** | Computer-side voice and "Hi Grok" wake word, with Gemini Live or Grok login voice; optional robot-camera face tracking and MCP | Compatible firmware, a computer connected over USB or Wi-Fi, and the chosen backend configuration; see [gateway/](../gateway/README.md) |
 | **3. + Grok Bot** | Hand tasks to a desktop agent and receive completion updates | Grok Bot signed in on that computer; native transport for Grok voice, optional CLI forwarding for Gemini |
 
 How the pieces talk to each other (ports, protocol, message flow, what each part needs): [docs/architecture.md](architecture.md).
@@ -45,7 +45,7 @@ Use this if you want the robot's voice to run through your computer, for example
 
 If the robot is plugged in over USB and cannot reach the computer over Wi-Fi, turn on `STACKCHAN_USB_TRANSPORT=1` and `STACKCHAN_USB_VOICE=1`. The gateway then carries the same Opus audio and `tts` / `listen` events over the serial port. `POST http://127.0.0.1:8766/say` speaks without the wake word. Details and flash steps: [gateway README, USB voice](../gateway/README.md#usb-voice-no-wi-fi-path-to-the-gateway).
 
-What path 2 does and does not do with this firmware: the gateway handles voice conversation, and on a Mac with a camera it turns the robot's head to follow your face ([Face tracking](../gateway/README.md#face-tracking)). Head, LED and camera control from Claude through the gateway's MCP tools does **not** reach this firmware, because its XiaoZhi client announces `features.mcp=false` in its hello message ([components/conversation/xiaozhi_client.cpp](../components/conversation/xiaozhi_client.cpp)) and does not handle MCP requests from the server. Face tracking uses the XiaoZhi `head` message instead, which the firmware handles. The shared gateway voice head, face and LED tools (off by default; `STACKCHAN_GEMINI_DEVICE_TOOLS=1`) also reach the firmware this way: `move_head` as a `head` message (firmware newer than v0.2.1), faces as emotion messages and LED colours as `led` messages. Camera tools do not work with this firmware.
+With path 2, the gateway handles voice and can follow faces using the CoreS3 camera over USB or Wi-Fi, with detection running on the Mac ([Face tracking](../gateway/README.md#face-tracking)). Tracking uses the XiaoZhi `head_tracking` and frame-bound `head_track` messages. General camera and device MCP tools are separate: this firmware announces `features.mcp=false` and does not handle gateway MCP requests. Shared gateway voice head, face and LED tools (`STACKCHAN_GEMINI_DEVICE_TOOLS=1`) use XiaoZhi `head`, emotion, and `led` messages.
 
 ### Path 3: firmware + gateway + Grok Bot
 

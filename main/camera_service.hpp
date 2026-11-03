@@ -5,6 +5,7 @@
 
 #include "board/board.hpp"
 #include "shared_state.hpp"
+#include <wifi_config_service/wifi_config_service.hpp>
 
 // Resident GC0308 camera lifecycle and HTTP capture/register sinks.
 // Camera operations are serialized. The render/LED/demo loops pause during
@@ -25,5 +26,10 @@ void init_resident(stackchan::board::Board& board);
 // of hiding the camera until reboot. Skipped when init_resident wasn't called
 // (for example, ASR mode) or the board has no camera.
 void register_sinks(SharedState& state);
+
+// USB snapshots use the same pose reservation and capture lock as HTTP.
+bool capture_tracking_frame(std::vector<std::uint8_t>& out, std::size_t& width, std::size_t& height,
+                            std::string& format, wifi_config::CameraCaptureMetadata& metadata,
+                            const std::function<bool(std::vector<std::uint8_t>&)>& transform = {}, bool motion = false);
 
 } // namespace stackchan::app::camera_service

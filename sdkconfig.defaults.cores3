@@ -7,6 +7,9 @@
 CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_SPIRAM_SPEED_80M=y
 
+# Run vision capture, JPEG encoding and the display at the rated S3 clock.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
 # 16 MB external SPI flash (W25Q128 footprint on the CoreS3 PCB).
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"

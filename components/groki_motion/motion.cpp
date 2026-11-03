@@ -3,6 +3,7 @@
 
 #include "groki_motion/motion.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace stackchan::groki_motion {
@@ -108,26 +109,45 @@ bool SpringAxis::step(float dt_s, float min_deg, float max_deg) noexcept
         return false;
     }
 
-    if (dt_s <= 0.0f) dt_s = 0.02f;
+    if (!std::isfinite(dt_s) || dt_s <= 0.0f)
+        dt_s = 0.02f;
     if (dt_s > 0.05f) dt_s = 0.05f;
 
-    const float acceleration = params_.stiffness * (target_deg_ - current_deg_) -
-                               params_.damping * velocity_deg_s_;
-    velocity_deg_s_ += acceleration * dt_s;
-    current_deg_ += velocity_deg_s_ * dt_s;
-
-    const float clamped = clamp_float(current_deg_, min_deg, max_deg);
-    if (clamped != current_deg_) {
-        current_deg_ = clamped;
-        if ((current_deg_ <= min_deg && velocity_deg_s_ < 0.0f) ||
-            (current_deg_ >= max_deg && velocity_deg_s_ > 0.0f)) {
-            velocity_deg_s_ = 0.0f;
+    // A stiff, fast spring is unstable if a delayed control tick is integrated
+    // as one large step. Preserve elapsed time using bounded substeps.
+    const int steps = static_cast<int>(std::ceil(dt_s / 0.02f));
+    const float step_s = dt_s / static_cast<float>(steps);
+    for (int step = 0; step < steps; ++step) {
+        if (max_velocity_ > 0 && max_acceleration_ > 0) {
+            const float error = target_deg_ - current_deg_;
+            // Begin braking before the ideal stopping distance, leaving room
+            // for discrete ticks and servo feedback quantization.
+            const float braking_speed = .75f * std::sqrt(2 * max_acceleration_ * std::fabs(error));
+            const float desired = std::copysign(std::min(max_velocity_, braking_speed), error);
+            velocity_deg_s_ +=
+                clamp_float(desired - velocity_deg_s_, -max_acceleration_ * step_s, max_acceleration_ * step_s);
+            velocity_deg_s_ = clamp_float(velocity_deg_s_, -max_velocity_, max_velocity_);
+        } else {
+            const float acceleration =
+                params_.stiffness * (target_deg_ - current_deg_) - params_.damping * velocity_deg_s_;
+            velocity_deg_s_ += acceleration * step_s;
         }
-    }
+        current_deg_ += velocity_deg_s_ * step_s;
 
-    if (!moving()) {
-        current_deg_ = target_deg_;
-        velocity_deg_s_ = 0.0f;
+        const float clamped = clamp_float(current_deg_, min_deg, max_deg);
+        if (clamped != current_deg_) {
+            current_deg_ = clamped;
+            if ((current_deg_ <= min_deg && velocity_deg_s_ < 0.0f) ||
+                (current_deg_ >= max_deg && velocity_deg_s_ > 0.0f)) {
+                velocity_deg_s_ = 0.0f;
+            }
+        }
+
+        if (!moving()) {
+            current_deg_ = target_deg_;
+            velocity_deg_s_ = 0.0f;
+            break;
+        }
     }
     return true;
 }

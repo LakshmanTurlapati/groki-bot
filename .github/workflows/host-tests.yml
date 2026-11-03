@@ -175,4 +175,30 @@ jobs:
       - name: pytest
         env:
           NO_PROXY: "*"
+          STACKCHAN_USB_DISABLE: "1"
         run: uv run pytest -q
+
+  vision-tracker-tests:
+    name: Vision detector (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tools/vision-tracker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test frame decoding and camera selection
+        run: swift test
+      - name: Build detector
+        run: swift build -c release
+      - name: Process a frame without opening a camera
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+          result = subprocess.run(
+              [".build/release/groki-vision-tracker", "--stdin-rgb565"],
+              input=bytes(320 * 240 * 2), capture_output=True, check=True, timeout=15,
+          )
+          assert json.loads(result.stdout) == {"face": None}
+          PY

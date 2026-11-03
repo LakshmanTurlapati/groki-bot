@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import suppress
 
 import pytest
 import pytest_asyncio
@@ -830,13 +831,15 @@ async def test_replacing_speaking_device_clears_old_tts_without_erasing_new_spee
                 await asyncio.wait_for(new.recv(), timeout=1.0)
                 await wait_for_tts(False)
                 assert status._tts_sources == set()
-                await old.send(json.dumps({"type": "tts", "state": "start"}))
+                with suppress(websockets.exceptions.ConnectionClosed):
+                    await old.send(json.dumps({"type": "tts", "state": "start"}))
                 await asyncio.sleep(0.05)
                 assert status.tts_active is False
                 await new.send(json.dumps({"type": "tts", "state": "start"}))
                 await wait_for_tts(True)
                 # The old socket can still have queued events; none owns the new device.
-                await old.send(json.dumps({"type": "tts", "state": "stop"}))
+                with suppress(websockets.exceptions.ConnectionClosed):
+                    await old.send(json.dumps({"type": "tts", "state": "stop"}))
                 await old.close()
                 await asyncio.sleep(0.05)
                 assert status.tts_active is True

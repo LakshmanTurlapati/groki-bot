@@ -9,6 +9,12 @@ from stackchan_mcp.gateway import Gateway, get_gateway
 from stackchan_mcp.gemini_voice_proxy import GeminiVoiceProxy
 
 
+@pytest.fixture(autouse=True)
+def legacy_mac_tracking(monkeypatch):
+    """These existing tracker tests exercise the explicitly selected webcam path."""
+    monkeypatch.setenv("STACKCHAN_FACE_TRACKER_SOURCE", "mac")
+
+
 def test_get_gateway_singleton():
     """get_gateway returns the same instance."""
     # Reset singleton for test isolation

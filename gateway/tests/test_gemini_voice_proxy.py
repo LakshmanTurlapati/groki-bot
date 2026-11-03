@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 from stackchan_mcp.cloud_proxy import CloudConnectionInfo
 from stackchan_mcp.device_emotion import (
@@ -29,10 +30,29 @@ from stackchan_mcp.wake_gate import (
     WakeGate,
     WakeGateResult,
     WakeGateState,
+    WakeWordUnavailable,
 )
 
 
 # --- Test doubles -------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _stop_proxy_workers(monkeypatch):
+    """Every test releases its native worker, including partial-start tests."""
+    proxies = []
+    original = GeminiVoiceProxy._start_wake_gate
+
+    async def start(proxy):
+        proxies.append(proxy)
+        await original(proxy)
+        await proxy._wake_runner.wait_initialized()
+
+    monkeypatch.setattr(GeminiVoiceProxy, "_start_wake_gate", start)
+    yield
+    for proxy in proxies:
+        if proxy._wake_runner is not None:
+            await proxy.stop()
 
 
 class FakeESP32:
@@ -566,6 +586,7 @@ async def test_wake_gate_idle_close_stops_forwarding_and_extinguishes_led(
     await proxy.start(info, {"type": "hello"}, send)
     bridge = proxy._bridge
     await proxy.send_device_binary(b"wake")
+    await asyncio.gather(*list(proxy._tts_tasks), return_exceptions=True)
     bridge.audio_sent.clear()
     esp32.calls.clear()
 
@@ -857,6 +878,7 @@ async def test_wake_gate_idle_close_uses_direct_led_when_ws_has_no_mcp(
 
     await proxy.start(info, {"type": "hello"}, send)
     await proxy.send_device_binary(b"wake")
+    await asyncio.gather(*list(proxy._tts_tasks), return_exceptions=True)
     esp32.leds.clear()
 
     now = 1.1
@@ -883,6 +905,7 @@ async def test_bridge_end_conversation_closes_wake_gate_and_extinguishes_led(
 
     await proxy.start(info, {"type": "hello"}, send)
     await proxy.send_device_binary(b"wake")
+    await asyncio.gather(*list(proxy._tts_tasks), return_exceptions=True)
     esp32.calls.clear()
 
     callback = proxy._bridge.kwargs["on_end_conversation"]
@@ -1752,11 +1775,14 @@ async def test_second_utterance_in_listening_window_reopens_activity(monkeypatch
     proxy._bridge = bridge
     proxy._codec = FakeCodec()
     gate = WakeGate(
-        kws=ScriptedKeywordSpotter([False]),
+        kws=ScriptedKeywordSpotter([True]),
         activity_rms_threshold=0.0,
     )
-    gate.state = WakeGateState.LISTENING
-    proxy._wake_gate = gate
+    proxy.wake_gate_factory = lambda: gate
+    await proxy._start_wake_gate()
+    await proxy._forward_gated_device_pcm(b"wake")
+    await bridge.send_audio_stream_end()
+    live.calls.clear()
 
     await proxy._forward_gated_device_pcm(b"round1")
     await bridge.send_audio_stream_end()
@@ -1766,7 +1792,7 @@ async def test_second_utterance_in_listening_window_reopens_activity(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_fallback_pass_through_opens_manual_vad_before_audio(monkeypatch):
+async def test_explicit_disable_pass_through_opens_manual_vad_before_audio(monkeypatch):
     from stackchan_mcp.gemini_live_bridge import GeminiLiveBridge
 
     monkeypatch.setenv("STACKCHAN_MANUAL_VAD", "1")
@@ -1786,7 +1812,7 @@ async def test_fallback_pass_through_opens_manual_vad_before_audio(monkeypatch):
     proxy, _, _ = _make_proxy(monkeypatch=monkeypatch)
     proxy._bridge = bridge
     proxy._codec = FakeCodec()
-    proxy._wake_gate = None
+    await proxy._start_wake_gate()
 
     await proxy._forward_gated_device_pcm(b"bypass")
 
@@ -1829,7 +1855,8 @@ async def test_gate_close_skips_led_off_while_tts_active(monkeypatch, info):
         activity_rms_threshold=0.0,
         is_tts_active=lambda: True,
     )
-    proxy._wake_gate = gate
+    proxy.wake_gate_factory = lambda: gate
+    await proxy._start_wake_gate()
     proxy._tts_active = True
     proxy._bridge = FakeBridge()
     proxy._codec = FakeCodec()
@@ -1872,26 +1899,45 @@ async def test_wake_gate_crash_rebuilds_with_backoff(monkeypatch, info):
         )
 
     proxy.wake_gate_factory = factory
-    proxy._wake_gate_rebuild_max = 3
 
     async def send(msg): sent.append(msg)
 
     await proxy.start(info, {"type": "hello"}, send)
+    release_retry = asyncio.Event()
+    retry_started = asyncio.Event()
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+        retry_started.set()
+        await release_retry.wait()
+
+    proxy._wake_runner.sleep = sleep
     try:
         await proxy.send_device_binary(b"one")
-        assert proxy._wake_gate_failures == 1
+        assert proxy._wake_runner.failures == 1
         assert proxy._wake_gate is None
+        assert proxy._bridge.audio_sent == []
+        await asyncio.wait_for(retry_started.wait(), 1)
+        assert delays == [2]
+        await proxy.send_device_binary(b"during outage")
+        assert proxy._bridge.audio_sent == []
 
-        proxy._wake_gate_next_rebuild_at = 0.0
+        release_retry.set()
+        async def wait_recovered():
+            while proxy.wake_gate_state != "DORMANT":
+                await asyncio.sleep(0.001)
+        await asyncio.wait_for(wait_recovered(), 1)
         await proxy.send_device_binary(b"two")
-        assert isinstance(proxy._wake_gate, WakeGate)
-        assert proxy._wake_gate_failures == 0
+        assert proxy._wake_gate is not None
+        assert proxy._wake_runner.failures == 0
+        assert proxy._bridge.audio_sent == []  # A fresh wake is still required.
     finally:
         await proxy.stop()
 
 
 @pytest.mark.asyncio
-async def test_wake_gate_permanent_failure_reports_unavailable(monkeypatch, info):
+async def test_wake_gate_failure_reports_unavailable_and_retry(monkeypatch, info):
     from stackchan_mcp.debug_status import DebugStatus
 
     st = DebugStatus()
@@ -1905,7 +1951,6 @@ async def test_wake_gate_permanent_failure_reports_unavailable(monkeypatch, info
         kws=ScriptedKeywordSpotter([False]),
         activity_rms_threshold=0.0,
     )
-    proxy._wake_gate_rebuild_max = 1
 
     async def send(msg): sent.append(msg)
 
@@ -1915,5 +1960,220 @@ async def test_wake_gate_permanent_failure_reports_unavailable(monkeypatch, info
         snap = st.snapshot()["wake_gate"]
         assert snap["available"] is False
         assert snap["state"] == "UNAVAILABLE"
+        assert snap["failures"] == 1
+        assert snap["retry_delay_s"] == 2
+        assert proxy._bridge.audio_sent == []
     finally:
         await proxy.stop()
+
+
+@pytest.mark.asyncio
+async def test_missing_wake_model_keeps_voice_connected_but_microphone_closed(monkeypatch, info):
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch)
+
+    def missing():
+        raise WakeWordUnavailable("model missing")
+
+    proxy.wake_gate_factory = missing
+
+    async def send(msg):
+        sent.append(msg)
+
+    assert await proxy.start(info, {}, send)
+    assert proxy.connected
+    assert proxy.wake_gate_state == "UNAVAILABLE"
+    assert await proxy.send_device_binary(b"private speech")
+    assert proxy._bridge.audio_sent == []
+    assert not proxy.is_listening and not proxy.conversation_active
+
+
+@pytest.mark.asyncio
+async def test_inference_failure_closes_vad_and_context_once(monkeypatch, info):
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch)
+
+    class FailsAfterWake(WakeGate):
+        def process(self, pcm):
+            if self.is_listening:
+                raise RuntimeError("detector failed during conversation")
+            return super().process(pcm)
+
+    proxy.wake_gate_factory = lambda: FailsAfterWake(kws=ScriptedKeywordSpotter([True]))
+    proxy._signal_wake_chime = lambda: None
+    activities = []
+
+    async def activity(active):
+        activities.append(active)
+
+    proxy.on_conversation_activity = activity
+
+    async def send(msg):
+        sent.append(msg)
+
+    assert await proxy.start(info, {}, send)
+    await proxy.send_device_binary(b"wake")
+    bridge = proxy._bridge
+    bridge.audio_sent.clear()
+    await proxy.send_device_binary(b"failed frame")
+    await proxy.send_device_binary(b"outage frame")
+    assert bridge.audio_sent == []
+    assert bridge.activity_end_sent and bridge.context_cleared
+    assert activities == [True, False]
+    assert proxy._status.wake_close_count == 1
+    assert proxy.wake_gate_state == "UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_tracking_pause_precedes_wake_chime_and_microphone_forwarding(monkeypatch, info):
+    proxy, _, _ = _make_proxy(monkeypatch=monkeypatch)
+    proxy.wake_gate_factory = lambda: WakeGate(kws=ScriptedKeywordSpotter([True]))
+    events = []
+
+    async def activity(active):
+        assert proxy.conversation_active == active
+        await asyncio.sleep(0)
+        events.append(("activity", active))
+
+    async def send(message):
+        events.append(("device", message))
+
+    proxy.on_conversation_activity = activity
+    await proxy.start(info, {}, send)
+    bridge = proxy._bridge
+
+    async def audio(pcm):
+        events.append(("audio", pcm))
+
+    bridge.send_audio = audio
+    await proxy.send_device_binary(b"wake")
+    await asyncio.gather(*list(proxy._tts_tasks), return_exceptions=True)
+    assert events[0] == ("activity", True)
+    assert any(event[0] == "audio" for event in events)
+    assert any(event[0] == "device" and '"start"' in event[1] for event in events if isinstance(event[1], str))
+    assert proxy.conversation_active  # Chime ending does not close the wake window.
+    assert ("activity", False) not in events
+    await proxy._handle_bridge_end_conversation()
+    assert events[-1] == ("activity", False)
+
+
+@pytest.mark.asyncio
+async def test_failed_tracking_pause_drops_wake_and_requires_another_wake(monkeypatch, info):
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch)
+    proxy.wake_gate_factory = lambda: WakeGate(kws=ScriptedKeywordSpotter([True, False, True]))
+    attempts = []
+
+    async def activity(active):
+        attempts.append(active)
+        if len(attempts) == 1:
+            raise ConnectionError("tracking pause failed")
+
+    async def send(message):
+        sent.append(message)
+
+    proxy.on_conversation_activity = activity
+    await proxy.start(info, {}, send)
+    await proxy.send_device_binary(b"first wake")
+    await proxy.send_device_binary(b"ordinary speech")
+    assert proxy._bridge.audio_sent == []
+    assert _tts_states(sent) == []
+    assert not proxy.is_listening
+    await proxy.send_device_binary(b"new wake")
+    assert proxy.is_listening
+    assert len(proxy._bridge.audio_sent) == 2  # Only new-window preroll.
+    assert attempts == [True, False, True]
+
+
+@pytest.mark.asyncio
+async def test_native_tts_pauses_tracking_before_envelope_and_resumes_after_stop(monkeypatch, info):
+    proxy, _, _ = _make_proxy(monkeypatch=monkeypatch)
+    events = []
+
+    async def activity(active):
+        assert proxy.conversation_active == active
+        events.append(("activity", active))
+
+    async def send(message):
+        events.append(("device", message))
+
+    proxy.on_conversation_activity = activity
+    await proxy.start(info, {}, send)
+    await proxy._handle_gemini_audio(b"\0" * OUTPUT_FRAME_BYTES)
+    await proxy.end_tts()
+    assert events[0] == ("activity", True)
+    assert events[-1] == ("activity", False)
+    assert not proxy.conversation_active
+
+
+@pytest.mark.asyncio
+async def test_failed_tracking_pause_blocks_tts_and_resets_activity(monkeypatch, info):
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch)
+
+    async def activity(active):
+        if active:
+            raise ConnectionError("tracking pause failed")
+
+    async def send(message):
+        sent.append(message)
+
+    proxy.on_conversation_activity = activity
+    await proxy.start(info, {}, send)
+    await proxy._handle_gemini_audio(b"\0" * OUTPUT_FRAME_BYTES)
+    assert sent == []
+    assert not proxy.conversation_active and not proxy._tts_active
+
+
+@pytest.mark.asyncio
+async def test_cancelled_speak_intent_clears_partially_delivered_pause(monkeypatch, info):
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch)
+    entered = asyncio.Event()
+    activities = []
+
+    async def activity(active):
+        activities.append(active)
+        if active:
+            entered.set()
+            await asyncio.Future()
+
+    async def send(message):
+        sent.append(message)
+
+    proxy.on_conversation_activity = activity
+    await proxy.start(info, {}, send)
+    speaking = asyncio.create_task(proxy.speak_text("pending", session_id="test", prompt_audio_frames=[]))
+    await asyncio.wait_for(entered.wait(), 1)
+    assert proxy.conversation_active
+    speaking.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await speaking
+    assert activities == [True, False]
+    assert not proxy.conversation_active
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_retired_proxy_cannot_clear_replacement_tts_or_send_late_device_updates(monkeypatch, info):
+    from stackchan_mcp.debug_status import DebugStatus
+
+    status = DebugStatus()
+    old, esp32, _ = _make_proxy(monkeypatch=monkeypatch, debug_status=status)
+    new, _, _ = _make_proxy(monkeypatch=monkeypatch, esp32=esp32, debug_status=status)
+
+    async def send(message):
+        pass
+
+    await old.start(info, {}, send)
+    await new.start(info, {}, send)
+    assert await old._begin_tts()
+    await asyncio.gather(*list(old._tts_tasks), return_exceptions=True)
+    old.retire()
+    assert not status.tts_active
+    assert await new._begin_tts()
+    await asyncio.gather(*list(new._tts_tasks), return_exceptions=True)
+    esp32.calls.clear()
+    await old._set_leds_safe(255, 0, 0)
+    await old._send_device_emotion_safe("angry")
+    await old._handle_session_dead()
+    await old.stop()
+    assert status.tts_active
+    assert esp32.calls == []
+    await new.end_tts()
+    assert not status.tts_active

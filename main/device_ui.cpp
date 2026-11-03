@@ -977,8 +977,7 @@ bool handle_tap(int x, int y)
                                          std::memory_order_relaxed);
             g_dirty.store(true, std::memory_order_relaxed);
         } else if (hit_row(1)) {
-            g_state->servo.target_yaw_deg.store(0.0f, std::memory_order_relaxed);
-            g_state->servo.target_pitch_deg.store(0.0f, std::memory_order_relaxed);
+            g_state->servo.set_target({0.0f, 0.0f}, 0, HeadSource::Manual, now_ms());
         } else if (hit_row(2)) {
             // Speaker-volume row: left third = -10 %, right third = +10 %,
             // center = mute toggle. Bumps SharedState; demo_loop watches

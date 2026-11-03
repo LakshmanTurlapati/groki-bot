@@ -15,9 +15,18 @@ namespace stackchan::wifi_config {
 struct CameraCaptureOptions {
     bool raw_bayer = false;
     bool colorbar = false;
+    bool tracking = false;
 };
-using CameraCaptureSink = std::function<bool(const CameraCaptureOptions&, std::vector<std::uint8_t>&,
-                                           std::size_t&, std::size_t&, std::string&)>;
+struct CameraCaptureMetadata {
+    std::string frame_id;
+    bool tracking_busy = false;
+    float capture_yaw = 0, capture_pitch = 0;
+    std::uint32_t capture_ms = 0;
+    bool motion_compensated = false;
+    float capture_motion_deg = 0;
+};
+using CameraCaptureSink = std::function<bool(const CameraCaptureOptions&, std::vector<std::uint8_t>&, std::size_t&,
+                                             std::size_t&, std::string&, CameraCaptureMetadata&)>;
 using CameraRegSink = std::function<bool(bool, std::uint8_t, std::uint8_t, std::uint8_t&)>;
 
 inline CameraCaptureSink capture_sink;

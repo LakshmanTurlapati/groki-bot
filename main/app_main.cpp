@@ -836,7 +836,7 @@ extern "C" void app_main()
     // servo 目標角へ写像する。角度は on-wire 生値が 0.1 度想定なので /10 して度に
     // する。servo タスクが台形速度で追従する (speed はゴール速度として素通し)。
     // laser は CoreS3 に該当 GPIO が無いので現状は無視 (診断ログのみ)。受信 cb は
-    // esp-now の専用タスクから呼ばれるため atomic store のみで軽量に保つ。
+    // esp-now の専用タスクから呼ばれるため目標値の引き渡しのみを行う (UART は servo_task が所有)。
 #if defined(CONFIG_STACKCHAN_ESPNOW_REMOTE_ENABLED)
     if (espnow_mode) {
         if (no_servo_bus || !cfg.servo_enabled) {
@@ -850,13 +850,9 @@ extern "C" void app_main()
             const float pitch_deg = std::clamp(static_cast<float>(p.pitch) / 10.0f,
                                                static_cast<float>(limits.pitch_min_deg),
                                                static_cast<float>(limits.pitch_max_deg));
-            g_state->servo.target_yaw_deg.store(yaw_deg, std::memory_order_relaxed);
-            g_state->servo.target_pitch_deg.store(pitch_deg, std::memory_order_relaxed);
-            if (p.speed > 0) {
-                g_state->servo.speed_override.store(
-                    static_cast<std::uint16_t>(std::clamp<int>(p.speed, 0, 1023)),
-                    std::memory_order_relaxed);
-            }
+            g_state->servo.set_target(
+                {yaw_deg, pitch_deg}, static_cast<std::uint16_t>(std::clamp<int>(p.speed, 0, 1023)),
+                stackchan::app::HeadSource::Manual, static_cast<std::uint32_t>(esp_timer_get_time() / 1000));
             // 受信の生存確認 + 写像の可視化 (~1 Hz に間引き。毎パケット出すと
             // 50ms 周期のストリームでログが溢れる)。
             static std::int64_t last_log_us = 0;
