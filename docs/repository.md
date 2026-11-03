@@ -12,7 +12,7 @@ Everything for the Groki Bot desktop robot (M5Stack CoreS3 with a Stack-chan bas
 | [gateway/](../gateway/README.md) | Gateway for your computer (Python): Gemini Live voice, wake word, MCP server, Grok Bot forwarding service |
 | [docs/architecture.md](architecture.md) | How firmware, gateway and Grok Bot communicate |
 | `docs/` | Web flasher, license page and other documentation, published to GitHub Pages |
-| [tools/vision-tracker/](../tools/vision-tracker/README.md) | Mac face tracker (Swift, Apple Vision) that the gateway starts for face tracking |
+| [tools/vision-tracker/](../tools/vision-tracker/README.md) | Swift/Apple Vision detector for robot-camera frames; also supports an explicitly selected Mac webcam |
 | `tools/` | Settings pages, avatar DSL compiler, [tools/stackchan-channel/](../tools/stackchan-channel/README.md) (MCP for Claude Code over the firmware's HTTP API), [tools/face-demo/](../tools/face-demo/README.md) (face demo scripts) and other host tools |
 
 The eyes use the eye-ring contour system from the [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball (15 on-device expressions with blinking, ring cycling and four-weight blending), while the body keeps the DSL animations for breathing, happy bounce, squash while speaking, shy floating hearts and blush. The eye-ring data is used under the Emotion Ball Community License; see [License](#license).

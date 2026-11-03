@@ -469,13 +469,15 @@ constexpr const char* kTag = "stackchan";
 
             const bool firmly_touched = reading.firmly_touched();
             if (reading.any_touched()) {
+                g_state->servo.preempt_tracking(now_ms);
                 // A light touch counts as attention too: any touch immediately wakes it from idle decay.
                 g_state->note_face_activity();
             }
             if (firmly_touched && !head_pet_touch_active && !external_servo_control) {
                 if (!head_pet_restore_pending) {
-                    head_pet_prev_yaw = g_state->servo.target_yaw_deg.load(std::memory_order_relaxed);
-                    head_pet_prev_pitch = g_state->servo.target_pitch_deg.load(std::memory_order_relaxed);
+                    const auto previous = g_state->servo.target();
+                    head_pet_prev_yaw = previous.yaw;
+                    head_pet_prev_pitch = previous.pitch;
                 }
                 head_pet_touch_active = true;
                 head_pet_restore_pending = false;
@@ -491,9 +493,7 @@ constexpr const char* kTag = "stackchan";
 
                 const auto pose = groki_motion::head_pet_pose(
                     head_pet_prev_yaw, head_pet_prev_pitch, motion_limits, esp_random());
-                g_state->servo.speed_override.store(pose.speed, std::memory_order_relaxed);
-                g_state->servo.target_yaw_deg.store(pose.yaw_deg, std::memory_order_relaxed);
-                g_state->servo.target_pitch_deg.store(pose.pitch_deg, std::memory_order_relaxed);
+                g_state->servo.set_target({pose.yaw_deg, pose.pitch_deg}, pose.speed, HeadSource::Manual, now_ms);
                 next_speech_ms = now_ms + 1500;
                 next_pose_ms = std::max(next_pose_ms, now_ms + 2000);
             } else if (!firmly_touched && head_pet_touch_active) {
@@ -542,7 +542,7 @@ constexpr const char* kTag = "stackchan";
                          static_cast<unsigned>(stroke_hit_ms[2]));
                 stackchan::wifi_config::mcp_events::publish_touch_stroke(direction);
                 speech.stop();
-                const float prev_yaw = g_state->servo.target_yaw_deg.load(std::memory_order_relaxed);
+                const float prev_yaw = g_state->servo.target().yaw;
 
                 g_state->request_face_overlay(avatar::Expression::Affection,
                                               avatar::ExpressionController::kDefaultOverlayHoldMs);
@@ -555,18 +555,18 @@ constexpr const char* kTag = "stackchan";
                 // external source (ESP-NOW remote) owns the head; still show
                 // the happy face + balloon above.
                 if (!external_servo_control) {
-                    // speed_override is consumed once: write it again before every target change.
+                    // Each target carries its own one-shot speed hint.
                     constexpr std::uint32_t kHalfPeriodMs = 160;
                     for (const auto& cmd : groki_motion::nadenade_wobble_steps()) {
-                        g_state->servo.speed_override.store(cmd.speed, std::memory_order_relaxed);
-                        g_state->servo.target_yaw_deg.store(cmd.yaw_deg, std::memory_order_relaxed);
+                        g_state->servo.set_target({cmd.yaw_deg, g_state->servo.target().pitch}, cmd.speed,
+                                                  HeadSource::Manual,
+                                                  static_cast<std::uint32_t>(esp_timer_get_time() / 1000));
                         vTaskDelay(pdMS_TO_TICKS(kHalfPeriodMs));
                     }
-                    g_state->servo.speed_override.store(groki_motion::kNadenadeWobbleSpeed,
-                                                        std::memory_order_relaxed);
-                    g_state->servo.target_yaw_deg.store(prev_yaw, std::memory_order_relaxed);
+                    g_state->servo.set_target({prev_yaw, g_state->servo.target().pitch},
+                                              groki_motion::kNadenadeWobbleSpeed, HeadSource::Manual,
+                                              static_cast<std::uint32_t>(esp_timer_get_time() / 1000));
                     vTaskDelay(pdMS_TO_TICKS(kHalfPeriodMs));
-                    g_state->servo.speed_override.store(0, std::memory_order_relaxed);
                 }
 
                 stroke_hit_ms = {0, 0, 0};
@@ -586,23 +586,17 @@ constexpr const char* kTag = "stackchan";
             if (g_state->clear_face_overlay_if(head_pet_overlay_cmd)) {
                 head_pet_overlay_cmd = 0;
             }
-            g_state->servo.speed_override.store(200, std::memory_order_relaxed);
-            g_state->servo.target_yaw_deg.store(head_pet_prev_yaw, std::memory_order_relaxed);
-            g_state->servo.target_pitch_deg.store(head_pet_prev_pitch, std::memory_order_relaxed);
+            g_state->servo.set_target({head_pet_prev_yaw, head_pet_prev_pitch}, 200, HeadSource::Manual, now_ms);
         }
 
         // Idle head poses: the head moves on its own when nobody interacts with it.
         if (!external_servo_control && !head_pet_touch_active && !head_pet_restore_pending &&
-            !g_state->servo.masked.load(std::memory_order_relaxed) &&
-            static_cast<std::int32_t>(now_ms - g_state->servo.head_hold_until_ms.load(std::memory_order_relaxed)) >= 0 &&
+            !g_state->servo.masked.load(std::memory_order_relaxed) && !g_state->servo.idle_paused(now_ms) &&
             now_ms >= next_pose_ms) {
-            const auto pose = groki_motion::idle_pose(
-                g_state->servo.target_yaw_deg.load(std::memory_order_relaxed),
-                g_state->servo.target_pitch_deg.load(std::memory_order_relaxed),
-                motion_limits, esp_random());
-            g_state->servo.speed_override.store(pose.speed, std::memory_order_relaxed);
-            g_state->servo.target_yaw_deg.store(pose.yaw_deg, std::memory_order_relaxed);
-            g_state->servo.target_pitch_deg.store(pose.pitch_deg, std::memory_order_relaxed);
+            const auto current_pose = g_state->servo.target();
+            const auto pose =
+                groki_motion::idle_pose(current_pose.yaw, current_pose.pitch, motion_limits, esp_random());
+            g_state->servo.set_target({pose.yaw_deg, pose.pitch_deg}, pose.speed, HeadSource::Idle, now_ms);
             next_pose_ms = now_ms + rand_range_ms(kPoseMinMs, kPoseMaxMs);
         }
 

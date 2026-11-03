@@ -3,6 +3,8 @@ idf_component_register(
         "openai_realtime_client.cpp"
         "gemini_live_client.cpp"
         "xiaozhi_client.cpp"
+        "usb_voice_framer.cpp"
+        "usb_voice_port.cpp"
         "base64.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."

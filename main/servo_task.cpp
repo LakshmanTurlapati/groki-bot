@@ -8,6 +8,7 @@
 #include <driver/uart.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -43,18 +44,23 @@ void servo_task_entry(void* arg)
     scs_servo::ScsServo yaw{bus, scs_servo::kYawId};
     scs_servo::ScsServo pitch{bus, scs_servo::kPitchId};
 
+    bool yaw_present = false, pitch_present = false;
     if (auto r = yaw.ping(); !r) {
         ESP_LOGW(kTag, "yaw (id=%u) ping failed: %d", scs_servo::kYawId,
                  static_cast<int>(r.error()));
     } else {
+        yaw_present = true;
         ESP_LOGI(kTag, "yaw (id=%u) ping OK", scs_servo::kYawId);
     }
     if (auto r = pitch.ping(); !r) {
         ESP_LOGW(kTag, "pitch (id=%u) ping failed: %d", scs_servo::kPitchId,
                  static_cast<int>(r.error()));
     } else {
+        pitch_present = true;
         ESP_LOGI(kTag, "pitch (id=%u) ping OK", scs_servo::kPitchId);
     }
+    args.state->servo.set_boot_nonce(esp_random());
+    args.state->servo.servo_available.store(yaw_present && pitch_present);
     // Torque on demand: on before moving, released once the spring settles. While the head rests the servos stay quiet,
     // cool and can be turned by hand. When the on-device 操作 (control) switch sets servo_enabled to false,
     // torque is forced off and all motion is suppressed (limp).
@@ -82,6 +88,53 @@ void servo_task_entry(void* arg)
 
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
+        auto& control = args.state->servo;
+        if (yaw_motion.initialized() && pitch_motion.initialized() &&
+            control.freeze_automatic({yaw_motion.current(), pitch_motion.current()})) {
+            yaw_motion.reset(yaw_motion.current());
+            pitch_motion.reset(pitch_motion.current());
+        }
+        if (auto request = control.take_request(now_ms())) {
+            auto allowed = [&] {
+                return control.enabled.load() && !control.range_mode.load() && !control.masked.load() &&
+                       !args.state->audio_stream_active.load();
+            };
+            const bool settled = yaw_motion.initialized() && pitch_motion.initialized() && !yaw_motion.moving() &&
+                                 !pitch_motion.moving();
+            std::optional<HeadControl::Pose> measured;
+            if (allowed() && (settled || request->motion) && !request->release) {
+                auto y = yaw.read_present_position();
+                auto p = pitch.read_present_position();
+                if (y && p && *y <= 1023 && *p <= 1023) {
+                    measured = HeadControl::Pose{scs_servo::raw_to_deg(*y, args.limits.yaw_zero),
+                                                 scs_servo::raw_to_deg(*p, args.limits.pitch_zero)};
+                }
+            }
+            auto action = control.finish(
+                *request, measured, settled, allowed(), now_ms(),
+                {static_cast<float>(args.limits.yaw_min_deg), static_cast<float>(args.limits.pitch_min_deg)},
+                {static_cast<float>(args.limits.yaw_max_deg), static_cast<float>(args.limits.pitch_max_deg)},
+                yaw_motion.initialized() && pitch_motion.initialized()
+                    ? std::optional<HeadControl::Pose>{{yaw_motion.current(), pitch_motion.current()}}
+                    : std::nullopt);
+            if (action) {
+                ESP_LOGI(kTag, "camera tracking: yaw %.1f -> %.1f, pitch %.1f -> %.1f", action->measured.yaw,
+                         action->target.yaw, action->measured.pitch, action->target.pitch);
+                if (!action->preserve_velocity || action->hold_yaw) {
+                    yaw_motion.reset(action->measured.yaw);
+                    last_yaw_target = scs_servo::deg_to_raw(action->measured.yaw, args.limits.yaw_zero);
+                }
+                if (!action->preserve_velocity || action->hold_pitch) {
+                    pitch_motion.reset(action->measured.pitch);
+                    last_pitch_target = scs_servo::deg_to_raw(action->measured.pitch, args.limits.pitch_zero);
+                }
+                if (!action->preserve_velocity || action->hold_yaw || action->hold_pitch)
+                    last_step_ms = now_ms();
+                // Motion-aware targets already refer to the measured camera
+                // heading. Keep the commanded trajectory intact: rebasing it
+                // to lagging feedback would introduce a backward goal step.
+            }
+        }
         const bool range_mode = args.state->servo.range_mode.load(std::memory_order_relaxed);
         if (range_mode) {
             if (torque_on || !last_range_mode) {
@@ -161,10 +214,12 @@ void servo_task_entry(void* arg)
 
         // Clamp commanded angles to the configured motion range so callers
         // (demo, conversation, future UI) all stay within the per-device limits.
-        const float yaw_deg = clamp_deg(args.state->servo.target_yaw_deg.load(std::memory_order_relaxed),
-                                        args.limits.yaw_min_deg, args.limits.yaw_max_deg);
-        const float pitch_deg = clamp_deg(args.state->servo.target_pitch_deg.load(std::memory_order_relaxed),
-                                          args.limits.pitch_min_deg, args.limits.pitch_max_deg);
+        const auto command = args.state->servo.take_target();
+        yaw_motion.set_motion_limits(command.tracking ? 35.0f : 0, command.tracking ? 140.0f : 0);
+        pitch_motion.set_motion_limits(command.tracking ? 28.0f : 0, command.tracking ? 110.0f : 0);
+        const auto pose = command.pose;
+        const float yaw_deg = clamp_deg(pose.yaw, args.limits.yaw_min_deg, args.limits.yaw_max_deg);
+        const float pitch_deg = clamp_deg(pose.pitch, args.limits.pitch_min_deg, args.limits.pitch_max_deg);
 
         if (!yaw_motion.initialized()) {
             if (auto r = yaw.read_present_position()) {
@@ -187,11 +242,8 @@ void servo_task_entry(void* arg)
 
         if (target_changed(yaw_deg, yaw_motion.target()) ||
             target_changed(pitch_deg, pitch_motion.target())) {
-            // A non-zero speed_override is consumed once, on the next target change,
-            // so a fast gesture does not permanently speed up the springs of later idle motion.
-            const std::uint16_t override =
-                args.state->servo.speed_override.exchange(0, std::memory_order_relaxed);
-            const std::uint16_t speed = override != 0 ? override : kDefaultSpringSpeed;
+            // Speed belongs to the same command snapshot as both target axes.
+            const std::uint16_t speed = command.speed != 0 ? command.speed : kDefaultSpringSpeed;
             yaw_motion.retarget(yaw_deg, speed);
             pitch_motion.retarget(pitch_deg, speed);
         }
@@ -232,7 +284,8 @@ void servo_task_entry(void* arg)
                 last_pitch_target = pitch_target;
             }
             release_at = step_now_ms + kSettleMarginMs;
-        } else if (torque_on && !yaw_motion.moving() && !pitch_motion.moving() && step_now_ms >= release_at) {
+        } else if (torque_on && !yaw_motion.moving() && !pitch_motion.moving() && step_now_ms >= release_at &&
+                   !control.tracking_holds(step_now_ms)) {
             // Move complete and holding still → release torque.
             (void)yaw.enable_torque(false);
             (void)pitch.enable_torque(false);
@@ -247,7 +300,11 @@ void servo_task_entry(void* arg)
 
 void start_servo_task(ServoTaskArgs& args)
 {
-    xTaskCreatePinnedToCore(servo_task_entry, "servo", 8192, &args, 4, nullptr, 0);
+    const auto started = xTaskCreatePinnedToCore(servo_task_entry, "servo", 8192, &args, 4, nullptr, 0) == pdPASS;
+    args.state->servo.servo_service_started.store(started);
+    if (!started) {
+        ESP_LOGE(kTag, "servo task could not be created");
+    }
 }
 
 } // namespace stackchan::app

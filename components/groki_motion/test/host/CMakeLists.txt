@@ -33,6 +33,11 @@ target_link_libraries(groki_motion_test_nadenade PRIVATE groki_motion_host)
 target_compile_options(groki_motion_test_nadenade PRIVATE -Wall -Wextra)
 add_test(NAME nadenade COMMAND groki_motion_test_nadenade)
 
+add_executable(groki_motion_test_spring test_spring.cpp)
+target_link_libraries(groki_motion_test_spring PRIVATE groki_motion_host)
+target_compile_options(groki_motion_test_spring PRIVATE -Wall -Wextra)
+add_test(NAME spring COMMAND groki_motion_test_spring)
+
 add_executable(groki_motion_test_led_runtime test_led_runtime.cpp)
 target_include_directories(groki_motion_test_led_runtime PRIVATE ${REPO_ROOT}/main)
 target_compile_options(groki_motion_test_led_runtime PRIVATE -Wall -Wextra)

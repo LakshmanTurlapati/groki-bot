@@ -8,7 +8,8 @@ dependencies:
   # component manager wire esp_camera.h into the board component's include
   # path — the CMake PRIV_REQUIRES list alone is not enough when the
   # component lives under managed_components.
-  espressif/esp32-camera: "^2.0.15"
+  # Pinned to the SCCB interface implemented by camera_sccb.cpp.
+  espressif/esp32-camera: "2.1.7"
   # WS2812 / NeoPixel RMT driver for the nekomimi (cat-ear) LED chain on
   # GPIO9 — 9 LEDs per ear, 18 total. See components/board/nekomimi_led_strip
   # for the host-side adapter. RMT-backed, no other deps pulled in.

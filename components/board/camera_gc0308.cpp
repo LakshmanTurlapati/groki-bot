@@ -12,6 +12,7 @@
 #if CONFIG_STACKCHAN_CAMERA_ENABLED
 #include <M5Unified.h>
 #include <esp_camera.h>
+#include <esp_system.h>
 #endif
 
 namespace stackchan::board {
@@ -37,6 +38,40 @@ constexpr std::size_t kMinInternalLargestBytes = 6 * 1024;
 // esp32-camera not to touch any LEDC output pin.  LEDC_TIMER_0/CHANNEL_0
 // are still required struct fields but are inert when pin_xclk < 0.
 constexpr int kXclkFreqHz = 20'000'000; // matches M5CoreS3 reference firmware
+
+bool g_shutdown_registered = false;
+
+bool assert_camera_reset()
+{
+    constexpr std::uint8_t address = 0x58;
+    constexpr std::uint8_t port1_output = 0x03;
+    constexpr std::uint32_t frequency = 100'000;
+    std::uint8_t value = 0;
+    // Keep the read/modify/write under one shared-bus transaction. Transfer
+    // failures release LovyanGFX's mutex, so do not call stop() after failure.
+    if (!m5::In_I2C.isEnabled() ||
+        m5::In_I2C.getSDA() != CONFIG_STACKCHAN_CAMERA_PIN_SIOD ||
+        m5::In_I2C.getSCL() != CONFIG_STACKCHAN_CAMERA_PIN_SIOC ||
+        !m5::In_I2C.start(address, false, frequency) ||
+        !m5::In_I2C.write(&port1_output, 1) ||
+        !m5::In_I2C.restart(address, true, frequency) ||
+        !m5::In_I2C.read(&value, 1, true)) {
+        return false;
+    }
+    const std::uint8_t bytes[] = {port1_output, static_cast<std::uint8_t>(value & ~0x01u)};
+    return m5::In_I2C.restart(address, false, frequency) &&
+           m5::In_I2C.write(bytes, sizeof(bytes)) && m5::In_I2C.stop();
+}
+
+void shutdown_camera()
+{
+    // esp_restart runs this before suspending the scheduler. Do not take the
+    // capture lock or deinit DMA here; stop the external sensor's PCLK/VSYNC
+    // before reboot, since they drive ESP32-S3 strapping pins GPIO45/46.
+    if (!assert_camera_reset()) {
+        ESP_LOGW(kTag, "could not assert camera reset before restart");
+    }
+}
 
 #endif // CONFIG_STACKCHAN_CAMERA_ENABLED
 
@@ -99,6 +134,18 @@ tl::expected<void, CameraError> CameraGc0308::begin(CameraPixelFormat format, Ca
         return tl::unexpected{CameraError::BadArgument};
     }
 
+    // Keep one handler for the boot lifetime, including failed initialisation
+    // and RAW mode swaps. Deinitialising ESP DMA does not stop sensor output.
+    if (!g_shutdown_registered) {
+        const esp_err_t result = esp_register_shutdown_handler(shutdown_camera);
+        if (result != ESP_OK) {
+            ESP_LOGE(kTag, "camera shutdown handler registration failed: 0x%x",
+                     static_cast<unsigned>(result));
+            return tl::unexpected{CameraError::DriverInit};
+        }
+        g_shutdown_registered = true;
+    }
+
     // Guard against the steady-state internal-RAM shortage. esp_camera_init
     // does internal allocations for the LCD_CAM peripheral state + a small
     // DMA descriptor chain (the frame buffer itself lives in PSRAM thanks to
@@ -112,23 +159,10 @@ tl::expected<void, CameraError> CameraGc0308::begin(CameraPixelFormat format, Ca
         return tl::unexpected{CameraError::LowMemory};
     }
 
-    // Release M5Unified's lgfx I2C driver before calling esp_camera_init.
-    // Both share GPIO12 (SIOD) and GPIO11 (SIOC); the SCCB driver inside
-    // esp32-camera installs its own i2c_master handle on those pins.
-    // lgfx::I2C auto-reinitialises on its next access, so no matching
-    // release is needed in end(). This mirrors the M5CoreS3 reference
-    // begin() which calls M5.In_I2C.release() for the same reason.
-    //
-    // Note: during QR scanning, battery/LED components continue to use
-    // m5::In_I2C on other I2C peripherals; SCCB is nearly idle while
-    // streaming, so sharing the bus this way is safe — same approach as
-    // the M5 reference firmware.
-    m5::In_I2C.release();
-
     camera_config_t cfg = {};
     cfg.pin_pwdn  = -1;   // PWDN tied to GND on the CoreS3 mainboard — not driven.
-    cfg.pin_reset = -1;   // RESET is always-high (no AW9523 control needed, matches
-                          // M5CoreS3 reference firmware which does not touch AW9523).
+    cfg.pin_reset = -1;   // CAM_RST is AW9523 P1_0, not an ESP GPIO. M5GFX
+                          // deasserts it at boot; our shutdown hook asserts it.
     cfg.pin_xclk  = -1;   // XCLK has no GPIO on the CoreS3 — sensor clock is
                           // supplied by a dedicated oscillator on the mainboard.
     cfg.pin_sccb_sda = CONFIG_STACKCHAN_CAMERA_PIN_SIOD;
@@ -149,7 +183,7 @@ tl::expected<void, CameraError> CameraGc0308::begin(CameraPixelFormat format, Ca
     cfg.ledc_timer   = LEDC_TIMER_0;   // required fields; inert when pin_xclk < 0
     cfg.ledc_channel = LEDC_CHANNEL_0;
 
-    cfg.sccb_i2c_port = -1; // let esp32-camera manage its own i2c_master port
+    cfg.sccb_i2c_port = -1; // SCCB_Init validates the pins against M5's shared bus
 
     // Caller's format at the caller's size. Grayscale (1 B/px) is all the QR
     // decoder needs; RGB565 (2 B/px, big-endian on the DVP path) serves the
@@ -243,9 +277,8 @@ tl::expected<void, CameraError> CameraGc0308::end()
     }
     const esp_err_t err = esp_camera_deinit();
     initialised_ = false;
-    // No AW9523 reset to reassert — camera power is always-on on this board.
-    // lgfx::I2C (m5::In_I2C) will reinitialise automatically on its next
-    // access after our earlier release() call, so no action needed here.
+    // Camera power stays on; the shared M5 I2C bus remains available to
+    // touch, audio and power devices after the camera driver is released.
     if (err != ESP_OK) {
         ESP_LOGW(kTag, "esp_camera_deinit returned 0x%x", static_cast<unsigned>(err));
         return tl::unexpected{CameraError::DriverDeinit};
@@ -267,7 +300,9 @@ tl::expected<CameraFrame, CameraError> CameraGc0308::capture()
     const pixformat_t expected = (format_ == CameraPixelFormat::Rgb565)
                                      ? PIXFORMAT_RGB565
                                      : PIXFORMAT_GRAYSCALE;
-    if (fb->format != expected ||
+    const std::size_t expected_bytes = expected_w_ * expected_h_ *
+                                       (format_ == CameraPixelFormat::Rgb565 ? 2 : 1);
+    if (fb->format != expected || fb->buf == nullptr || fb->len != expected_bytes ||
         fb->width != expected_w_ || fb->height != expected_h_) {
         esp_camera_fb_return(fb);
         return tl::unexpected{CameraError::WrongPixelFormat};
@@ -302,15 +337,15 @@ tl::expected<std::uint8_t, CameraError> CameraGc0308::read_reg(std::uint8_t page
     if (s == nullptr) {
         return tl::unexpected{CameraError::SensorAccess};
     }
-    // Page select (0xfe), read, restore page 0. get_reg returns the masked
-    // value or <0 on bus error — but 0 is also a valid register value, so
-    // only the page writes can be checked reliably.
+    // Select the page, read, then restore page 0. The upstream SCCB read
+    // interface maps bus errors to 0xff, which is also valid register data;
+    // only explicit sensor errors and failed page writes are detectable here.
     if (s->set_reg(s, 0xfe, 0xff, page) != 0) {
         return tl::unexpected{CameraError::SensorAccess};
     }
     const int v = s->get_reg(s, reg, 0xff);
-    (void)s->set_reg(s, 0xfe, 0xff, 0x00);
-    if (v < 0) {
+    const int restore = s->set_reg(s, 0xfe, 0xff, 0x00);
+    if (v < 0 || restore != 0) {
         return tl::unexpected{CameraError::SensorAccess};
     }
     return static_cast<std::uint8_t>(v);
@@ -328,8 +363,8 @@ tl::expected<void, CameraError> CameraGc0308::write_reg(std::uint8_t page, std::
     }
     int ret = s->set_reg(s, 0xfe, 0xff, page);
     if (ret == 0) ret = s->set_reg(s, reg, 0xff, value);
-    (void)s->set_reg(s, 0xfe, 0xff, 0x00);
-    if (ret != 0) {
+    const int restore = s->set_reg(s, 0xfe, 0xff, 0x00);
+    if (ret != 0 || restore != 0) {
         return tl::unexpected{CameraError::SensorAccess};
     }
     return {};

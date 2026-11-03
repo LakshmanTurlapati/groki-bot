@@ -244,8 +244,10 @@ class WakeGate:
 
     def process(self, pcm_16khz: bytes) -> WakeGateResult:
         """Process one PCM frame and return the frames that may be forwarded upstream."""
-        if not self.available:
+        if not self.enabled:
             return WakeGateResult(forward_pcm=(pcm_16khz,), bypassed=True)
+        if not self.available:
+            raise WakeWordUnavailable("wake word detection is enabled but unavailable")
         if not pcm_16khz:
             return WakeGateResult()
 
@@ -416,21 +418,21 @@ def create_wake_gate_from_env(
     kws: KeywordSpotter | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> WakeGate | None:
-    """Create the production wake gate; None means pass-through mode."""
+    """Create the production gate; only explicit disable returns None.
+
+    Missing models or runtimes raise WakeWordUnavailable so callers can keep
+    the microphone closed while retrying initialization.
+    """
     if _env_disabled("STACKCHAN_WAKE_WORD"):
         logger.info("wake word gate disabled by STACKCHAN_WAKE_WORD=0")
         return None
-    try:
-        spotter = kws or SherpaOnnxKeywordSpotter(
-            model_dir=_model_dir_from_env(),
-            keyword=_keyword_from_env(),
-            phrase=_phrase_from_env(),
-            keywords_score=_float_env("STACKCHAN_KWS_SCORE", 7.0),
-            keywords_threshold=_float_env("STACKCHAN_KWS_THRESHOLD", 0.05),
-        )
-    except WakeWordUnavailable as exc:
-        logger.warning("wake word gate unavailable; passing device audio through: %s", exc)
-        return None
+    spotter = kws or SherpaOnnxKeywordSpotter(
+        model_dir=_model_dir_from_env(),
+        keyword=_keyword_from_env(),
+        phrase=_phrase_from_env(),
+        keywords_score=_float_env("STACKCHAN_KWS_SCORE", 7.0),
+        keywords_threshold=_float_env("STACKCHAN_KWS_THRESHOLD", 0.05),
+    )
     return WakeGate(
         kws=spotter,
         idle_s=_float_env("STACKCHAN_WAKE_IDLE_S", DEFAULT_WAKE_IDLE_S),

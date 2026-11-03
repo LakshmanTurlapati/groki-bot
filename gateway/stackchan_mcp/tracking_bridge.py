@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import math
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any
+
+from .robot_tracking_control import RobotTrackingControl, SmoothRobotTrackingControl
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +51,14 @@ class TrackingBridge:
         on_head_command: Callable[[], None] | None = None,
         is_tts_active: Callable[[], bool] | None = None,
         is_listening: Callable[[], bool] | None = None,
+        source: str = "mac",
     ) -> None:
         self.esp32 = esp32
         self.config = config or TrackingConfig()
         self.enabled = True
+        self.source = source
+        self.robot_control = RobotTrackingControl.from_env()
+        self.robot_motion_control = SmoothRobotTrackingControl(self.robot_control)
         self._mode = "idle"
         self._is_tts_active = is_tts_active
         self._is_listening = is_listening
@@ -107,6 +114,8 @@ class TrackingBridge:
         return getattr(self.esp32, "device_connected", False)
 
     async def snap_to_last_position(self, *, speed: int = 250) -> bool:
+        if self.source == "robot":
+            return False
         if not self._device_reachable():
             return False
         yaw, pitch = self.last_position or (0, 0)
@@ -169,6 +178,8 @@ class TrackingBridge:
         return self.config.__dict__.copy()
 
     async def handle_detection(self, detection: dict[str, Any]) -> bool:
+        if self.source != "mac":
+            return False
         confidence = float(detection.get("confidence", 0))
         if confidence < self.config.min_confidence:
             return False
@@ -192,6 +203,45 @@ class TrackingBridge:
             detection=detection,
         )
         self._ensure_resample_task()
+        return True
+
+    async def handle_robot_detection(self, face: dict[str, float] | None, context: Any) -> bool:
+        """Correct image error relative to the firmware's measured capture pose."""
+        if (
+            self.source != "robot" or not self.enabled or self.mode in {"working", "quiet"}
+            or self.esp32.connection is not context.connection
+            or context.connection.session_id != context.session_id
+            or not context.connection.connected
+            or not context.connection.camera_tracking_v1
+            or asyncio.get_running_loop().time() > context.deadline
+        ):
+            return False
+        valid_face = False
+        if isinstance(face, dict):
+            try:
+                x, y, confidence = (float(face[k]) for k in ("x", "y", "confidence"))
+                valid_face = (all(math.isfinite(v) for v in (x, y, confidence))
+                              and 0 <= x <= 1 and 0 <= y <= 1 and 0.5 <= confidence <= 1)
+            except (KeyError, TypeError, ValueError):
+                pass
+        if not valid_face:
+            self.robot_motion_control.reset()
+            await context.connection.send_head_track(context.frame_id, release=True)
+            return False
+        pose = getattr(context, "capture_pose", None)
+        if pose is not None:
+            yaw, pitch = self.robot_motion_control.correction(
+                x, y, pose, context.started_at,
+                (context.connection, context.session_id, getattr(context, "generation", 0)),
+            )
+        else:
+            self.robot_motion_control.reset()
+            yaw, pitch = self.robot_control.correction(x, y)
+        await context.connection.send_head_track(
+            context.frame_id, delta_yaw=yaw, delta_pitch=pitch,
+        )
+        if self._on_face_detected is not None:
+            self._on_face_detected()
         return True
 
     def _update_resample_target(

@@ -4,11 +4,14 @@ import struct
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 from stackchan_mcp.wake_gate import (
     WAKE_KEYWORD,
     SherpaOnnxKeywordSpotter,
     WakeGate,
     WakeGateState,
+    WakeWordUnavailable,
     create_wake_gate_from_env,
     flatten_pcm,
     model_download_commands,
@@ -166,15 +169,15 @@ def test_speech_after_idle_timeout_requires_new_wake_word() -> None:
     assert gate.state == WakeGateState.DORMANT
 
 
-def test_disabled_or_unavailable_gate_bypasses_audio() -> None:
+def test_only_explicitly_disabled_gate_bypasses_audio() -> None:
     pcm = _pcm(100)
     disabled = WakeGate(kws=FakeKeywordSpotter([True]), enabled=False)
     unavailable = WakeGate(kws=FakeKeywordSpotter([True], available=False))
 
     assert disabled.process(pcm).forward_pcm == (pcm,)
     assert disabled.process(pcm).bypassed is True
-    assert unavailable.process(pcm).forward_pcm == (pcm,)
-    assert unavailable.process(pcm).bypassed is True
+    with pytest.raises(WakeWordUnavailable):
+        unavailable.process(pcm)
 
 
 def test_dormant_periodic_reset_on_quiet_timeout() -> None:
@@ -413,11 +416,12 @@ def test_pcm_rms_int16_uses_sample_energy() -> None:
     assert pcm_rms_int16(pcm) == 1000.0
 
 
-def test_create_wake_gate_returns_none_when_model_is_missing(monkeypatch) -> None:
+def test_create_wake_gate_raises_when_model_or_runtime_is_missing(monkeypatch) -> None:
     monkeypatch.delenv("STACKCHAN_WAKE_WORD", raising=False)
     monkeypatch.setenv("STACKCHAN_KWS_MODEL_DIR", "/tmp/stackchan-missing-kws-model")
 
-    assert create_wake_gate_from_env() is None
+    with pytest.raises(WakeWordUnavailable):
+        create_wake_gate_from_env()
 
 
 def test_create_wake_gate_returns_none_when_disabled(monkeypatch) -> None:

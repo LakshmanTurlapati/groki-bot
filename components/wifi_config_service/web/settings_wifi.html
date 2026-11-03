@@ -1443,8 +1443,8 @@ async function refresh() {
     $('dis-ip').textContent = s.ip || '—';
     applyBoardGating(typeof s.board === 'number' ? s.board : null);
     // Camera section: driven by capability (has_camera = capture sink
-    // registered on the device) rather than board-kind guessing, so a
-    // camera-less CoreS3 variant naturally hides it.
+    // registered on the device) rather than board-kind guessing, so
+    // unsupported board profiles naturally hide it.
     const camSec = document.getElementById('camera-section');
     if (camSec) camSec.style.display = s.has_camera ? '' : 'none';
     for (const id of ['btn-camera-capture', 'btn-camera-raw', 'btn-camera-colorbar',
@@ -1883,9 +1883,8 @@ $('btn-ota').addEventListener('click', startOta);
 $('btn-ota-release').addEventListener('click', startReleaseOta);
 
 // --- Camera test capture ---------------------------------------------------
-// GET /api/camera/capture returns raw 8-bit grayscale with the dimensions in
-// X-Frame-Width/Height headers. Rendering client-side via putImageData keeps
-// the device free of a JPEG encoder; 77 KB over LAN is fast enough.
+// GET /api/camera/capture returns raw pixels. Decode them into the canvas
+// using the dimensions and pixel format supplied by the X-Frame-* headers.
 
 let cameraLastRaw = null; // {buf, w, h} of the last RAW (Bayer) capture
 

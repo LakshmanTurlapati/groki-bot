@@ -16,19 +16,17 @@ namespace stackchan::board {
 // Power / reset on the CoreS3 main board:
 //   - AXP2101 ALDO3 supplies 3V3 to the camera (already enabled by M5Unified
 //     at boot — we do NOT touch the PMIC here).
-//   - RESET and PWDN are always deasserted by pull-ups on the mainboard; no
-//     AW9523 toggling is required (or performed) — this matches the M5CoreS3
-//     reference firmware which also leaves AW9523 untouched for the camera.
+//   - CAM_RST is active-low on AW9523 P1_0. M5GFX deasserts it at boot; a
+//     shutdown handler asserts it before controlled esp_restart calls so
+//     sensor PCLK/VSYNC do not drive GPIO45/46 during reset. External resets
+//     bypass that handler. PWDN is tied low on the mainboard.
 //   - XCLK has no GPIO: the sensor clock comes from an on-board oscillator,
 //     so pin_xclk = -1 in camera_config_t.
 //
 // I2C / SCCB sharing:
-//   begin() calls m5::In_I2C.release() immediately before esp_camera_init so
-//   that the SCCB driver can install its own i2c_master handle on GPIO12/11
-//   without conflicting with lgfx.  lgfx reinitialises automatically on its
-//   next access, so battery and LED drivers that use m5::In_I2C continue
-//   to work normally during QR scanning — SCCB is nearly idle while streaming,
-//   so the two are safe to share this way (same approach as the M5 reference).
+//   camera_sccb.cpp routes sensor transactions through m5::In_I2C and its
+//   mutex, shared with touch, audio and power devices. Camera init/deinit
+//   never releases or reconfigures that bus.
 //
 // We never touch AXP2101 (0x34) directly or run a bus scan — both are
 // forbidden by the repo-wide I2C policy (see CLAUDE.md).
@@ -43,11 +41,11 @@ enum class CameraError {
     NotSupported,      // built without esp32-camera (atoms3r) or wrong board kind
     LowMemory,         // internal-RAM contiguous block < the safety floor at init time
     PowerExpander,     // reserved — no longer used (camera power is always-on on CoreS3)
-    DriverInit,        // esp_camera_init returned non-OK (sensor not detected, DMA setup, ...)
+    DriverInit,        // shutdown handler registration or esp_camera_init failed
     DriverDeinit,      // esp_camera_deinit returned non-OK (logged but rarely actionable)
     NotInitialised,    // capture() / deinit() called before begin()
     CaptureFailed,     // esp_camera_fb_get returned nullptr (driver timeout / no frame)
-    WrongPixelFormat,  // returned frame doesn't match the begin() format (defensive)
+    WrongPixelFormat,  // returned frame has invalid format, dimensions, buffer, or byte count
     SensorAccess,      // SCCB register read/write failed (set_reg / colorbar / RAW switch)
     BadArgument,       // unsupported format/size combination (e.g. BayerRaw below VGA)
 };
@@ -132,8 +130,8 @@ public:
     std::size_t frame_width() const noexcept { return expected_w_; }
     std::size_t frame_height() const noexcept { return expected_h_; }
 
-    // Release m5::In_I2C, then call esp_camera_init with the given pixel
-    // format and frame size. Idempotent: a second call while already
+    // Call esp_camera_init with the given pixel format and frame size.
+    // Idempotent: a second call while already
     // initialised is a no-op success (the original format/size stay — end()
     // first to switch).
     //
@@ -145,9 +143,8 @@ public:
     begin(CameraPixelFormat format = CameraPixelFormat::Grayscale,
           CameraFrameSize size = CameraFrameSize::Qvga);
 
-    // Tear down esp_camera. Camera power is always-on on the CoreS3 mainboard,
-    // so no I/O expander action is taken. m5::In_I2C will auto-reinit on its
-    // next access. Safe to call when not initialised (returns OK).
+    // Tear down esp_camera, preserving camera power and the shared M5 I2C
+    // bus. Safe to call when not initialised (returns OK).
     tl::expected<void, CameraError> end();
 
     // Grab the latest frame at the begin() format/size. Returns a RAII handle
@@ -160,10 +157,8 @@ public:
     // reference frames for validating the RGB565 transfer path (byte order,
     // 565 decode) end to end.
     //
-    // IMPORTANT (this and the register accessors below): SCCB shares
-    // GPIO12/11 with m5::In_I2C, so runtime sensor traffic must only happen
-    // while the In_I2C pollers are quiesced (SharedState::i2c_quiesce) —
-    // same rule as capture sessions.
+    // Serialize camera callers so register page selections cannot overlap.
+    // Other board devices share the I2C transaction mutex safely.
     tl::expected<void, CameraError> set_colorbar(bool enable);
 
     // Raw SCCB register access for interactive colour tuning (AWB gains /

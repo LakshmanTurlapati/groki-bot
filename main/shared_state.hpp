@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "avatar/expression.hpp"
+#include "head_control.hpp"
 
 namespace stackchan::app {
 
@@ -66,9 +67,9 @@ private:
 };
 
 // State shared between the demo / servo / render / conversation / led tasks
-// and the settings sinks. Grouped by domain; every leaf is either a
-// lock-free atomic or a VersionedValue (mutex + version counter). See each
-// group for ownership notes (who writes, who reads).
+// and the settings sinks. Scalar leaves are atomic; compound snapshots use
+// VersionedValue or HeadControl's short mutex-protected transactions. See
+// each group for ownership notes (who writes, who reads).
 class SharedState {
 public:
     using BalloonCompletionCallback = std::function<void()>;
@@ -104,15 +105,7 @@ public:
     Face face;
 
     // --- Servo (servo_task reads; demo_loop / conversation / UI write) -----
-    struct Servo {
-        std::atomic<float> target_yaw_deg{0.0f};
-        std::atomic<float> target_pitch_deg{0.0f};
-        // Non-zero overrides the servo task's default Goal Speed for the next
-        // write_goal_position. Used for snappy gestures (head shake).
-        std::atomic<std::uint16_t> speed_override{0};
-        // Keeps the autonomous idle poses from replacing a gateway head
-        // command right away (esp_timer milliseconds).
-        std::atomic<std::uint32_t> head_hold_until_ms{0};
+    struct Servo : HeadControl {
         // Servo torque enable. The on-device 操作 (control) screen toggles
         // this; the servo task enables/disables torque to match (false =
         // head goes limp).
@@ -121,7 +114,7 @@ public:
         // hand) and the servo task polls present-position via Read so the
         // settings UIs can capture zero / min / max while the user holds the
         // head at each pose. While set, the servo task ignores
-        // target_yaw_deg / target_pitch_deg entirely. The captured raw steps
+        // the commanded head pose entirely. The captured raw steps
         // are published below.
         std::atomic<bool> range_mode{false};
         // Most recent present-position read in range mode (raw SCS step,
@@ -316,28 +309,14 @@ public:
 
     // --- Cross-cutting coordination flags (top-level by design) ------------
 
-    // Cooperative quiesce for camera sessions. Two independent hazards:
-    //
-    // 1) I2C: the GC0308's SCCB shares the physical bus (G11/G12) AND the
-    //    I2C controller with m5::In_I2C, but through a different software
-    //    stack (IDF i2c_master vs lgfx's register-level driver). Any In_I2C
-    //    access while esp_camera is initialised re-inits the controller
-    //    under the SCCB driver's feet → SCCB_Write fails
-    //    ESP_ERR_INVALID_STATE (the historical "camera vs touch/led race").
-    //
-    // 2) PSRAM bandwidth: the camera EDMA writes frames into a PSRAM fb.
-    //    At RGB565 (2 B/px) the write rate collides with the render task's
-    //    full-screen PSRAM sprite traffic (compose + push at 30 fps) and
-    //    frames arrive torn — confirmed on hardware as bands of corrupt
-    //    pixels interleaved with good rows.
-    //
-    // camera_service raises this flag for the duration of its session (the
-    // ONLY writer); the periodic In_I2C users (demo_loop's M5.update /
-    // battery / nadenade / IMU poll, led_task's strip refresh) AND the
-    // render task skip their work while it's set. Sessions are one-shot and
-    // ~1.5 s, so the pause (frozen face, LEDs holding state) is invisible
-    // in normal use.
+    // Pause render and polling loops during camera capture to reduce PSRAM
+    // contention. camera_service is the only writer; every request clears
+    // the flag on exit. I2C bus exclusion comes from M5Unified's shared
+    // transaction mutex, independently of this cooperative pause.
     std::atomic<bool> i2c_quiesce{false};
+    // Camera acquisition excludes the framebuffer compose/push exactly,
+    // without guessing how long an in-flight rendering iteration takes.
+    std::mutex camera_render_mutex;
 
     // Cooperative I2S handoff for BLE audio streaming. CoreS3 shares the
     // I2S_NUM_1 bus between mic + speaker, so audio_stream_sink can't just

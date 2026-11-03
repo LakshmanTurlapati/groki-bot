@@ -115,6 +115,9 @@ class DebugStatus:
     # ---- wake_gate (wake word gate)----
     wake_available: bool = False
     wake_state: str = "DORMANT"
+    wake_failures: int = 0
+    wake_retry_delay_s: float | None = None
+    wake_error: str | None = None
     wake_last_wake_at: float | None = None
     wake_count: int = 0
     wake_close_count: int = 0
@@ -260,9 +263,15 @@ class DebugStatus:
 
     # ---- wake_gate events ----
 
-    def on_wake_gate_configured(self, *, available: bool, state: str = "DORMANT") -> None:
+    def on_wake_gate_configured(
+        self, *, available: bool, state: str = "DORMANT", failures: int = 0,
+        retry_delay_s: float | None = None, error: str | None = None,
+    ) -> None:
         self.wake_available = available
         self.wake_state = state
+        self.wake_failures = failures
+        self.wake_retry_delay_s = retry_delay_s
+        self.wake_error = error
 
     def on_wake_woke(self) -> None:
         self.wake_state = "LISTENING"
@@ -343,6 +352,9 @@ class DebugStatus:
             "wake_gate": {
                 "state": self.wake_state,
                 "available": self.wake_available,
+                "failures": self.wake_failures,
+                "retry_delay_s": self.wake_retry_delay_s,
+                "error": self.wake_error,
                 "last_wake_at": self.wake_last_wake_at,
                 "wake_count": self.wake_count,
                 "close_count": self.wake_close_count,

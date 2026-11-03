@@ -14,6 +14,7 @@
 #include <tl/expected.hpp>
 
 #include "conversation/conversation_error.hpp"
+#include "conversation/head_command.hpp"
 
 namespace stackchan::conversation {
 
@@ -56,6 +57,7 @@ struct ConversationConfig {
     // Cloudflare Access service token in front of a proxied API. Empty = none.
     std::string extra_headers;
     bool enable_input_transcription{true};
+    bool camera_tracking_v1{false};
     std::uint32_t vad_silence_ms{500};
     std::uint32_t vad_prefix_padding_ms{300};
     float vad_threshold{0.5f};
@@ -86,6 +88,8 @@ enum class ConversationEventType : std::uint8_t {
     // `head_pitch` degrees at `head_speed`. The application clamps to the
     // per-device servo limits.
     HeadPose,
+    HeadTrackingModeChanged,
+    HeadTrack,
     // Backend warned that the current connection will be terminated soon
     // (Gemini Live `goAway` message — currently fires near the 15-min audio
     // session cap, but the server may send it at any time). The application
@@ -121,6 +125,8 @@ struct ConversationEvent {
     float head_yaw{0};
     float head_pitch{0};
     std::uint16_t head_speed{0};
+    HeadTrackingMode head_tracking_mode{HeadTrackingMode::Off};
+    HeadTrackingCommand head_tracking_command;
     // `esp_timer_get_time()` at emit, in microseconds. Used by the conv-task
     // to measure event-queue latency (`now_us() - emit_us`) when diagnosing
     // audio pipeline stalls. 0 if the producer didn't set it.

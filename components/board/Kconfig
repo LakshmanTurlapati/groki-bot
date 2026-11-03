@@ -37,8 +37,8 @@ menu "Stack-chan board"
             int "SIOD (SCCB SDA) GPIO"
             default 12
             help
-                Shared with the internal M5Unified I2C SDA — esp32-camera owns
-                SCCB independently of m5::In_I2C.
+                Must match the internal M5Unified I2C SDA. Camera SCCB
+                transactions use m5::In_I2C and its transaction mutex.
 
         config STACKCHAN_CAMERA_PIN_SIOC
             int "SIOC (SCCB SCL) GPIO"

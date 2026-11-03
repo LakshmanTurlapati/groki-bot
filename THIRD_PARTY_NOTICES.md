@@ -24,10 +24,10 @@ This file lists the third-party software and data that are included in this repo
 | Component | Location | License | Copyright |
 |---|---|---|---|
 | hts_engine API 1.10 (modified for embedded use, see [components/hts_engine/README.md](components/hts_engine/README.md)) | `components/hts_engine/` | BSD-3-Clause, full text in [components/hts_engine/COPYING](components/hts_engine/COPYING) | (c) 2001-2015 Nagoya Institute of Technology, Department of Computer Science; (c) 2001-2008 Tokyo Institute of Technology, Interdisciplinary Graduate School of Science and Engineering |
-| M5GFX | submodule `components/M5GFX` | MIT | (c) 2021 M5Stack |
+| M5GFX 0.2.36 | submodule `components/M5GFX`, plus [patches/m5gfx.patch](patches/m5gfx.patch) | MIT | (c) 2021 M5Stack |
 | efont Chinese bitmap fonts (inside M5GFX, used for on-screen text) | `components/M5GFX/src/lgfx/Fonts/efont/` | BSD-3-Clause | (c) 2000-2001 /efont/ The Electronic Font Open Laboratory |
 | Adafruit GFX classic 5x7 font (inside M5GFX, `Font0`) | `components/M5GFX/src/lgfx/Fonts/glcdfont.h` | BSD-2-Clause | (c) 2012 Adafruit Industries |
-| M5Unified | submodule `components/M5Unified`, plus [patches/m5unified.patch](patches/m5unified.patch) | MIT | (c) 2021 M5Stack |
+| M5Unified | submodule `components/M5Unified`, plus [driver fixes](patches/m5unified.patch) and [local M5GFX selection](patches/m5unified-local-m5gfx.patch) | MIT | (c) 2021 M5Stack |
 | tl::expected 1.3.1 | submodule `components/tl_expected/expected` | CC0-1.0 | Sy Brand |
 | ESP-IDF 5.5 (bootloader, drivers, FreeRTOS, lwIP, mbedTLS, NimBLE and other bundled components) | build framework | Apache-2.0, plus the licenses of its bundled components listed in ESP-IDF's `COPYRIGHT.rst` | (c) Espressif Systems (Shanghai) Co., Ltd. and contributors |
 
@@ -52,7 +52,6 @@ Declared in `main/idf_component.yml` and downloaded by the IDF component manager
 | espressif/led_strip | 3.0.3 | Apache-2.0 | Espressif Systems |
 | espressif/mdns | 1.13.1 | Apache-2.0 | Espressif Systems |
 | espressif/quirc | 1.2.0 | ISC | (c) 2010-2012 Daniel Beer |
-| m5stack/m5gfx | 0.2.30 | MIT | (c) 2021 M5Stack |
 
 ## Voice data
 

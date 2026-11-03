@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 import uuid
 from collections.abc import Awaitable, Callable
@@ -68,6 +69,16 @@ class ESP32Connection:
         # a connection built outside the hello handshake (as in tests)
         # keeps the historical "assume full MCP" behaviour.
         self.mcp_supported: bool = True
+        self.transport: str = "websocket"
+        self.camera_tracking_v1 = False
+        self.camera_tracking_v2 = False
+        self._proxy_stop_task: asyncio.Task[None] | None = None
+
+    @property
+    def peer_host(self) -> str | None:
+        """The transport peer, independent of device-supplied HTTP headers."""
+        address = getattr(self._ws, "remote_address", None)
+        return address[0] if isinstance(address, tuple) and address and isinstance(address[0], str) else None
 
     @property
     def connected(self) -> bool:
@@ -210,6 +221,31 @@ class ESP32Connection:
             "speed": message["speed"],
         }
 
+    async def send_head_tracking(self, mode: str) -> None:
+        if mode not in {"tracking", "conversation", "off"}:
+            raise ValueError("Invalid head tracking mode")
+        if not self.connected or not self.camera_tracking_v1:
+            raise ConnectionError("Camera tracking is unavailable")
+        await asyncio.wait_for(self._ws_send(json.dumps({"type": "head_tracking", "mode": mode})), 1.0)
+
+    async def send_head_track(
+        self, frame_id: str, *, delta_yaw: float = 0, delta_pitch: float = 0, release: bool = False,
+    ) -> None:
+        """Send a best-effort correction; firmware validates and consumes the frame token."""
+        if not self.connected or not self.camera_tracking_v1:
+            raise ConnectionError("Camera tracking is unavailable")
+        if not isinstance(frame_id, str) or not frame_id or len(frame_id) > 128:
+            raise ValueError("Invalid tracking frame token")
+        message: dict[str, Any] = {"type": "head_track", "frame_id": frame_id}
+        if release:
+            message["release"] = True
+        else:
+            if not math.isfinite(delta_yaw) or not math.isfinite(delta_pitch):
+                raise ValueError("Tracking corrections must be finite")
+            message.update(delta_yaw=max(-15.0, min(15.0, delta_yaw)),
+                           delta_pitch=max(-10.0, min(10.0, delta_pitch)))
+        await asyncio.wait_for(self._ws_send(json.dumps(message)), 1.0)
+
     async def speak(self, text: str, emotion: str | None = None) -> SpeakResult:
         """Queue one TTS utterance and stream it to the ESP32."""
 
@@ -308,6 +344,48 @@ class ESP32Connection:
         self._pending.clear()
 
 
+class _ConnectionBoundEndpoint:
+    """Recheck device ownership when a cached voice-tool reference dispatches."""
+
+    _METHODS = frozenset({"call_tool", "send_head", "send_led", "send_emotion", "on_end_conversation"})
+
+    def __init__(self, target: Any, connection: ESP32Connection, is_current: Callable[[], bool]):
+        self._target = target
+        self._connection = connection
+        self._is_current = is_current
+
+    @property
+    def connection(self) -> ESP32Connection | None:
+        return self._connection if self._is_current() else None
+
+    @property
+    def device_connected(self) -> bool:
+        return self._is_current() and bool(getattr(self._target, "device_connected", False))
+
+    @property
+    def connected(self) -> bool:
+        return self._is_current() and bool(getattr(self._target, "connected", False))
+
+    @property
+    def mcp_supported(self) -> bool:
+        return self._is_current() and self._connection.mcp_supported
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in self._METHODS:
+            raise AttributeError(name)
+        callback = getattr(self._target, name, None)
+        if not callable(callback):
+            return None
+
+        async def dispatch(*args, **kwargs):
+            if not self._is_current():
+                raise ConnectionError("Device connection is no longer current")
+            result = callback(*args, **kwargs)
+            return await result if inspect.isawaitable(result) else result
+
+        return dispatch
+
+
 class ESP32Manager:
     """Manages ESP32 device connections.
 
@@ -327,6 +405,7 @@ class ESP32Manager:
         self._server: Any = None
         self._lock = asyncio.Lock()
         self._init_tasks: list[asyncio.Task] = []
+        self._retirement_tasks: set[asyncio.Task[None]] = set()
         self._vision_url: str = ""
         self._vision_token: str = ""
         self.usb_transport = usb_transport
@@ -347,6 +426,8 @@ class ESP32Manager:
         self.on_head_command: Callable[[], None] | None = None
         self.on_device_state: Callable[[str], None] | None = None
         self.on_wake_detected: Callable[[], Awaitable[None]] | None = None
+        self.on_connection_changed: Callable[[], Awaitable[None]] | None = None
+        self.on_tts_changed: Callable[[ESP32Connection], Awaitable[None]] | None = None
 
     @property
     def device_connected(self) -> bool:
@@ -378,9 +459,120 @@ class ESP32Manager:
         """
         return self._tts_lock
 
+    def _websocket_voice_active(self) -> bool:
+        conn = self._connection
+        return (
+            conn is not None
+            and conn.connected
+            and getattr(conn, "transport", "websocket") != "usb"
+        )
+
+    async def begin_usb_voice(
+        self,
+        *,
+        sender: Any,
+        hello: dict[str, Any],
+        device_id: str,
+    ) -> ESP32Connection | None:
+        """Create the per-connection voice proxy the WebSocket hello path creates.
+
+        Returns None when a live Wi-Fi voice session already owns the device,
+        so USB voice does not replace a working WebSocket.
+        """
+        if self._websocket_voice_active():
+            return None
+        session_id = str(uuid.uuid4())
+        connection = ESP32Connection(sender, session_id)
+        connection.transport = "usb"
+        connection.device_id = device_id or "usb"
+        features = hello.get("features") if isinstance(hello, dict) else None
+        if isinstance(features, dict):
+            connection.mcp_supported = bool(features.get("mcp"))
+            connection.camera_tracking_v1 = features.get("camera_tracking_v1") is True
+            connection.camera_tracking_v2 = connection.camera_tracking_v1 and features.get("camera_tracking_v2") is True
+        else:
+            connection.mcp_supported = False
+            connection.camera_tracking_v1 = False
+        try:
+            connection.protocol_version = int(hello.get("version", 1))
+        except (TypeError, ValueError):
+            connection.protocol_version = 1
+
+        proxy = self._cloud_proxy_factory()
+        connection.cloud_proxy = proxy
+        bind = getattr(self, "_bind_proxy_callbacks", None)
+        if callable(bind):
+            bind(connection)
+        info = CloudConnectionInfo(
+            device_id=connection.device_id,
+            protocol_version=str(connection.protocol_version),
+        )
+        try:
+            if proxy is not None:
+                await proxy.start(info, hello, sender.send)
+            async with self._lock:
+                if self._websocket_voice_active():
+                    raise ConnectionError("WebSocket voice became active during USB startup")
+                self._connection = connection
+                self._debug_status.on_device_connected(connection.device_id)
+            resp = HelloResponse(session_id=session_id, transport="usb")
+            await sender.send(resp.model_dump_json())
+            changed = getattr(self, "on_connection_changed", None)
+            if callable(changed):
+                await changed()
+        except BaseException as exc:
+            connection.disconnect()
+            await self.release_connection(connection)
+            if proxy is not None:
+                stop = getattr(proxy, "stop", None)
+                if callable(stop):
+                    try:
+                        await stop()
+                    except Exception:
+                        logger.exception("Failed USB voice startup cleanup")
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            logger.warning("USB voice session failed to start: %s", exc)
+            return None
+        if not connection.mcp_supported:
+            logger.info("USB voice ready (voice-only): device=%s", connection.device_id)
+        return connection
+
+    async def release_connection(self, connection: ESP32Connection) -> None:
+        """Drop ``connection`` if it is still the current device."""
+        if self._connection is not connection:
+            return
+        self._connection = None
+        self._debug_status.on_device_disconnected()
+        self._debug_status.on_tts_state(False, source="local")
+        self._debug_status.on_tts_state(False, source="device")
+        changed = getattr(self, "on_connection_changed", None)
+        if callable(changed):
+            await changed()
+
+    def observe_device_audio(self, connection: ESP32Connection) -> None:
+        if self._connection is connection and connection.connected:
+            self._debug_status.on_device_audio()
+
+    async def observe_device_message(self, connection: ESP32Connection, message: dict[str, Any]) -> None:
+        """Apply listen/tts state from a USB voice JSON frame."""
+        if self._connection is not connection or not connection.connected:
+            return
+        self._observe_device_state(message)
+        callback = getattr(self, "on_tts_changed", None)
+        if message.get("type") == "tts" and callable(callback):
+            await callback(connection)
+
     def get_status_with_transports(self) -> dict[str, Any]:
         """Get status for callers that can use either WebSocket or USB."""
         status = dict(self.get_status())
+        conn = self._connection
+        if conn is not None and conn.connected and getattr(conn, "transport", "websocket") == "usb":
+            status["connected"] = True
+            status["ws_connected"] = False
+            status["usb_connected"] = True
+            status["transport"] = "usb"
+            return status
         ws_connected = bool(status.get("connected"))
         usb_connected = self.usb_connected
         status["ws_connected"] = ws_connected
@@ -423,6 +615,8 @@ class ESP32Manager:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        if self._retirement_tasks:
+            await asyncio.gather(*list(self._retirement_tasks), return_exceptions=True)
 
     def _check_auth(
         self, connection: ServerConnection, request: websockets.http11.Request
@@ -445,6 +639,96 @@ class ESP32Manager:
             401, "Unauthorized", websockets.datastructures.Headers()
         )
 
+    def _bind_proxy_callbacks(self, connection: ESP32Connection) -> None:
+        """Keep callbacks captured by a voice bridge scoped to its device."""
+        proxy = connection.cloud_proxy
+        if proxy is None:
+            return
+
+        def current() -> bool:
+            return connection.connected and self._connection is connection
+
+        for name in ("on_head_command", "on_device_state"):
+            callback = getattr(proxy, name, None)
+            if callable(callback):
+                def guarded(*args, _callback=callback, **kwargs):
+                    if current():
+                        return _callback(*args, **kwargs)
+                setattr(proxy, name, guarded)
+
+        for name in ("on_conversation_activity", "set_face_tracking"):
+            callback = getattr(proxy, name, None)
+            if callable(callback):
+                async def guarded_async(*args, _callback=callback, _name=name, **kwargs):
+                    if not current():
+                        if _name == "set_face_tracking":
+                            return {"ok": False, "error": "Device connection is no longer current"}
+                        return None
+                    result = _callback(*args, **kwargs)
+                    return await result if inspect.isawaitable(result) else result
+                setattr(proxy, name, guarded_async)
+
+        esp32_ref = getattr(proxy, "esp32_ref", None)
+        if callable(esp32_ref):
+            device_endpoint = None
+
+            def bound_device():
+                nonlocal device_endpoint
+                if not connection.connected:
+                    return None
+                if device_endpoint is None:
+                    target = esp32_ref()
+                    if target is None:
+                        return None
+                    device_endpoint = _ConnectionBoundEndpoint(target, connection, current)
+                return device_endpoint
+
+            # start() can construct its bridge before registration, but tools
+            # captured by that bridge can dispatch only for the current socket.
+            proxy.esp32_ref = bound_device
+        usb = getattr(proxy, "usb_transport", None)
+        if usb is not None:
+            proxy.usb_transport = _ConnectionBoundEndpoint(usb, connection, current)
+
+    def _start_proxy_stop(self, connection: ESP32Connection) -> asyncio.Task[None] | None:
+        if connection.cloud_proxy is None:
+            return None
+        if connection._proxy_stop_task is None:
+            retire = getattr(connection.cloud_proxy, "retire", None)
+            if callable(retire):
+                retire()
+
+            async def stop_proxy() -> None:
+                try:
+                    await connection.cloud_proxy.stop()
+                except Exception:
+                    logger.exception("Retired voice proxy cleanup failed")
+
+            task = asyncio.create_task(stop_proxy(), name="retired-device-voice")
+            connection._proxy_stop_task = task
+            self._retirement_tasks.add(task)
+            task.add_done_callback(self._retirement_tasks.discard)
+        return connection._proxy_stop_task
+
+    def _retire_connection(self, connection: ESP32Connection) -> None:
+        connection.disconnect()
+        self._start_proxy_stop(connection)
+
+        async def close_socket() -> None:
+            try:
+                await asyncio.wait_for(
+                    connection._ws.close(code=1000, reason="Replaced by a new device connection"),
+                    timeout=1.0,
+                )
+            except (asyncio.TimeoutError, OSError, websockets.exceptions.ConnectionClosed):
+                transport = getattr(connection._ws, "transport", None)
+                if transport is not None:
+                    transport.abort()
+
+        task = asyncio.create_task(close_socket(), name="retired-device-socket")
+        self._retirement_tasks.add(task)
+        task.add_done_callback(self._retirement_tasks.discard)
+
     async def _handler(self, ws: ServerConnection) -> None:
         """Handle an incoming ESP32 WebSocket connection.
 
@@ -461,10 +745,14 @@ class ESP32Manager:
         connection.device_id = device_id
         cloud_proxy: CloudProxy | None = self._cloud_proxy_factory()
         connection.cloud_proxy = cloud_proxy
+        self._bind_proxy_callbacks(connection)
+        registered = False
 
         try:
             async for message in ws:
                 if isinstance(message, bytes):
+                    if connection is not self._connection or not connection.connected:
+                        continue
                     self._debug_status.on_device_audio()
                     await handle_audio_frame(
                         message,
@@ -479,17 +767,32 @@ class ESP32Manager:
                     logger.warning("Invalid JSON from ESP32: %s", str(message)[:100])
                     continue
 
+                if not isinstance(data, dict):
+                    continue
+
                 msg_type = data.get("type", "")
+                if msg_type not in {"hello", "mcp"} and (
+                    connection is not self._connection or not connection.connected
+                ):
+                    continue
                 # A replaced socket can still deliver queued TTS events. Only
                 # the current device may update its speaking state.
-                if connection is self._connection:
+                if connection is self._connection and connection.connected:
                     self._observe_device_state(data)
+                    if msg_type == "tts" and self.on_tts_changed is not None:
+                        await self.on_tts_changed(connection)
 
                 if msg_type == "hello":
+                    if registered or not connection.connected:
+                        continue
                     # ESP32 hello handshake
                     features = data.get("features", {})
+                    if not isinstance(features, dict):
+                        features = {}
                     mcp_supported = bool(features.get("mcp"))
                     connection.mcp_supported = mcp_supported
+                    connection.camera_tracking_v1 = features.get("camera_tracking_v1") is True
+                    connection.camera_tracking_v2 = connection.camera_tracking_v1 and features.get("camera_tracking_v2") is True
                     if not mcp_supported:
                         # Voice-only chassis (e.g. ciniml/stackchan-idf's
                         # XiaoZhiClient): accept the connection for audio +
@@ -542,13 +845,17 @@ class ESP32Manager:
                         if self._connection is not None and self._connection is not connection:
                             if self._connection.connected:
                                 logger.warning("Replacing existing ESP32 connection")
-                            self._connection.disconnect()
+                            self._retire_connection(self._connection)
                             # The old handler's finally no longer owns _connection,
                             # so release its device and local speaking sources now.
                             self._debug_status.on_tts_state(False, source="device")
                             self._debug_status.on_tts_state(False, source="local")
                         self._connection = connection
+                        registered = True
                         self._debug_status.on_device_connected(device_id)
+
+                    if self.on_connection_changed is not None:
+                        await self.on_connection_changed()
 
                     if mcp_supported:
                         # Start initialization as a separate task so the read
@@ -562,7 +869,8 @@ class ESP32Manager:
 
                 elif msg_type == "mcp":
                     if connection is not self._connection:
-                        await self._handle_external_mcp_request(ws, data, session_id)
+                        if not registered and connection.connected:
+                            await self._handle_external_mcp_request(ws, data, session_id)
                         continue
 
                     # MCP response from ESP32
@@ -584,15 +892,18 @@ class ESP32Manager:
         except websockets.exceptions.ConnectionClosed:
             logger.info("ESP32 disconnected: device=%s", device_id)
         finally:
-            if cloud_proxy is not None:
-                await cloud_proxy.stop()
             connection.disconnect()
+            stop_task = self._start_proxy_stop(connection)
+            if stop_task is not None:
+                await asyncio.shield(stop_task)
             async with self._lock:
                 if self._connection is connection:
                     self._connection = None
                     self._debug_status.on_device_disconnected()
                     self._debug_status.on_tts_state(False, source="local")
                     self._debug_status.on_tts_state(False, source="device")
+            if self._connection is None and self.on_connection_changed is not None:
+                await self.on_connection_changed()
 
     async def _init_device(self, connection: ESP32Connection, device_id: str) -> None:
         """Initialize MCP session with a newly connected device."""
@@ -828,6 +1139,8 @@ class ESP32Manager:
         if state == "start":
             self._debug_status.on_tts_state(True, source="local")
         try:
+            if state == "start" and self.on_tts_changed is not None:
+                await self.on_tts_changed(connection)
             await connection.send_tts_state(state)
         except BaseException:
             if state == "start" and self._connection is connection:
@@ -836,6 +1149,8 @@ class ESP32Manager:
         finally:
             if state == "stop" and self._connection is connection:
                 self._debug_status.on_tts_state(False, source="local")
+            if self._connection is connection and self.on_tts_changed is not None:
+                await self.on_tts_changed(connection)
 
     async def speak(self, text: str, emotion: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Speak through the connected ESP32 device."""

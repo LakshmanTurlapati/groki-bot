@@ -35,6 +35,7 @@
 #include <wifi_config_service/wifi_config_service.hpp>
 #if CONFIG_STACKCHAN_CONVERSATION_ENABLED
 #include "conversation_task.hpp"
+#include "usb_voice_service.hpp"
 #endif
 #include "camera_service.hpp"
 #include "demo_loop.hpp"
@@ -258,6 +259,14 @@ extern "C" void app_main()
         }
     }
     static stackchan::config::DeviceConfig cfg = stackchan::config::load();
+#if !CONFIG_STACKCHAN_ASR_ENABLED
+    // Preserve local-only behavior when upgrading an ASR device to a build
+    // without WakeNet. Leave NVS unchanged so switching back restores ASR.
+    if (cfg.operation_mode == stackchan::config::OperationMode::AsrLocal) {
+        cfg.operation_mode = stackchan::config::OperationMode::MicLipSync;
+        ESP_LOGW(kTag, "local ASR unavailable in this build; using microphone lip-sync");
+    }
+#endif
 
 #if defined(CONFIG_STACKCHAN_ESPNOW_POC)
     // [ESP-NOW PoC] 通常起動をスキップし、M5Stack 公式 Stack-chan 互換の ESP-NOW
@@ -284,8 +293,7 @@ extern "C" void app_main()
 #endif
 
     // Resident camera init (M5Base only; no-op elsewhere / slim builds).
-    // Must run after the i2c dump (which uses In_I2C) and before any task
-    // that touches In_I2C starts — see camera_service::init_resident.
+    // Reserve DMA memory before audio/network tasks fragment internal RAM.
     // Skipped in ASR mode (frees internal/DMA RAM for esp-sr AFE).
     if (!asr_mode) {
         stackchan::app::camera_service::init_resident(board);
@@ -685,8 +693,8 @@ extern "C" void app_main()
     // (run_demo_loop 直前) まで遅延する — 下記 defer_voice_load を参照。
     // アップロード sink は register_avatar_bytecode_sinks 内で登録済み。
 
-    // Camera capture / register sinks (no-op when the resident camera did
-    // not come up; /api/status's has_camera derives from this registration).
+    // Register camera capability; requests retry a failed resident init.
+    // Unsupported boards keep /api/status's has_camera=false.
     stackchan::app::camera_service::register_sinks(*g_state);
 
     // /mcp/* channel sinks + the settings-page test-speak buttons.
@@ -828,7 +836,7 @@ extern "C" void app_main()
     // servo 目標角へ写像する。角度は on-wire 生値が 0.1 度想定なので /10 して度に
     // する。servo タスクが台形速度で追従する (speed はゴール速度として素通し)。
     // laser は CoreS3 に該当 GPIO が無いので現状は無視 (診断ログのみ)。受信 cb は
-    // esp-now の専用タスクから呼ばれるため atomic store のみで軽量に保つ。
+    // esp-now の専用タスクから呼ばれるため目標値の引き渡しのみを行う (UART は servo_task が所有)。
 #if defined(CONFIG_STACKCHAN_ESPNOW_REMOTE_ENABLED)
     if (espnow_mode) {
         if (no_servo_bus || !cfg.servo_enabled) {
@@ -842,13 +850,9 @@ extern "C" void app_main()
             const float pitch_deg = std::clamp(static_cast<float>(p.pitch) / 10.0f,
                                                static_cast<float>(limits.pitch_min_deg),
                                                static_cast<float>(limits.pitch_max_deg));
-            g_state->servo.target_yaw_deg.store(yaw_deg, std::memory_order_relaxed);
-            g_state->servo.target_pitch_deg.store(pitch_deg, std::memory_order_relaxed);
-            if (p.speed > 0) {
-                g_state->servo.speed_override.store(
-                    static_cast<std::uint16_t>(std::clamp<int>(p.speed, 0, 1023)),
-                    std::memory_order_relaxed);
-            }
+            g_state->servo.set_target(
+                {yaw_deg, pitch_deg}, static_cast<std::uint16_t>(std::clamp<int>(p.speed, 0, 1023)),
+                stackchan::app::HeadSource::Manual, static_cast<std::uint32_t>(esp_timer_get_time() / 1000));
             // 受信の生存確認 + 写像の可視化 (~1 Hz に間引き。毎パケット出すと
             // 50ms 周期のストリームでログが溢れる)。
             static std::int64_t last_log_us = 0;
@@ -877,6 +881,9 @@ extern "C" void app_main()
     // PCM ring stack at compile time.
 #if CONFIG_STACKCHAN_CONVERSATION_ENABLED
     if (!espnow_mode) {
+        // Reader first, so a host voice/mode signal is not missed while the
+        // conversation task is still waiting for Wi-Fi.
+        stackchan::app::start_usb_voice_service();
         stackchan::app::start_conversation_task(*g_conversation_args);
     }
 #else

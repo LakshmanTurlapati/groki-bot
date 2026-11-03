@@ -104,10 +104,11 @@ jobs:
           apt-get install -y --no-install-recommends nodejs
           node --version
 
-      - name: Apply M5Unified patches
+      - name: Apply M5 library patches
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE/components/M5Unified"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/components/M5GFX"
           tools/apply-m5-patches.sh
 
       - name: ccache (compiler cache)
@@ -144,8 +145,8 @@ jobs:
           echo "Build date: $BUILD_DATE"
 
       - name: Pin PROJECT_VER for the build
-        # `tools/apply-m5-patches.sh` modifies the M5Unified submodule's
-        # working tree, which makes ESP-IDF's internal
+        # `tools/apply-m5-patches.sh` modifies the M5 library submodules'
+        # working trees, which makes ESP-IDF's internal
         # `git describe --tags --dirty` (run during cmake) tack a -dirty
         # suffix onto the version stamped into esp_app_desc. Writing the
         # resolved version to version.txt at the project root takes priority

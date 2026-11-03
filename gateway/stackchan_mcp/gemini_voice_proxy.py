@@ -27,7 +27,6 @@ import logging
 import math
 import os
 import struct
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +45,7 @@ from .gemini_live_bridge import GeminiLiveBridge, manual_vad_enabled
 from .opus_codec import StackchanOpusCodec
 from .session_keepalive import SessionKeepalive, keepalive_interval_from_env
 from .wake_gate import LISTENING_LED_RGB, WakeGate, create_wake_gate_from_env
+from .wake_gate_runner import WakeGateProcessError, WakeGateRunner, WakeGateSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,7 @@ class GeminiVoiceProxy:
     wake_gate_factory: Callable[[], WakeGate | None] | None = None
     on_head_command: Callable[[], None] | None = None
     on_device_state: Callable[[str], None] | None = None
+    on_conversation_activity: Callable[[bool], Awaitable[None]] | None = None
     set_face_tracking: Callable[[bool], Awaitable[dict[str, Any]]] | None = None
     debug_status: DebugStatus | None = None
 
@@ -112,11 +113,11 @@ class GeminiVoiceProxy:
     _bridge: GeminiLiveBridge | None = None
     _codec: StackchanOpusCodec | None = None
     _edge_tts: EdgeTTSProvider | None = None
-    _wake_gate: WakeGate | None = None
-    _wake_gate_failures: int = 0
-    _wake_gate_permanently_failed: bool = False
-    _wake_gate_next_rebuild_at: float = 0.0
-    _wake_gate_rebuild_max: int = 3
+    _wake_gate: WakeGateSnapshot | None = None
+    _wake_runner: WakeGateRunner | None = None
+    _conversation_callback_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _conversation_notified: bool | None = False
+    _edge_tts_requests: int = 0
     _keepalive: SessionKeepalive | None = None
     _send_to_device: SendToDevice | None = None
     _device_hello: dict[str, Any] | None = None
@@ -200,6 +201,79 @@ class GeminiVoiceProxy:
     @property
     def _status(self) -> DebugStatus:
         return self.debug_status or get_debug_status()
+
+    @property
+    def _tts_source(self) -> str:
+        return f"voice:{id(self)}"
+
+    @property
+    def is_listening(self) -> bool:
+        """Read the last completed wake decision without touching native state."""
+        return bool(not self._stopped and self._wake_gate and self._wake_gate.is_listening)
+
+    @property
+    def wake_gate_state(self) -> str:
+        runner = self._wake_runner
+        return runner.state if runner is not None else "UNAVAILABLE"
+
+    @property
+    def conversation_active(self) -> bool:
+        return bool(not self._stopped and (
+            self.is_listening or self._tts_active or self._speak_text_active
+            or self._edge_tts_requests
+        ))
+
+    async def _notify_conversation_activity(self, *, required: bool = False) -> None:
+        """Finish the tracking pause before any conversation audio is sent."""
+        async with self._conversation_callback_lock:
+            active = self.conversation_active
+            if active == self._conversation_notified:
+                return
+            try:
+                if self.on_conversation_activity is not None:
+                    result = await self.on_conversation_activity(active)
+                    if result is False:
+                        raise RuntimeError("conversation activity update was rejected")
+            except asyncio.CancelledError:
+                self._conversation_notified = None
+                raise
+            except Exception:
+                logger.exception("conversation activity update failed (active=%s)", active)
+                # Delivery can fail after the receiver changes local state.
+                # Force the cleanup idle notification and a future pause retry.
+                self._conversation_notified = None
+                if required and active:
+                    raise
+            else:
+                self._conversation_notified = active
+
+    def _on_wake_runner_change(self, runner: WakeGateRunner) -> None:
+        if runner is not self._wake_runner or self._stopped:
+            return
+        became_available = self._wake_gate is None and runner.snapshot is not None
+        self._wake_gate = runner.snapshot
+        self._status.on_wake_gate_configured(
+            available=runner.snapshot is not None,
+            state=runner.state,
+            failures=runner.failures,
+            retry_delay_s=runner.retry_delay_s,
+            error=runner.last_error,
+        )
+        if became_available and self._ready_event.is_set() and self._keepalive is None:
+            self._start_keepalive()
+
+    async def _start_wake_gate(self) -> None:
+        previous, self._wake_runner = self._wake_runner, None
+        if previous is not None:
+            await previous.stop()
+        self._wake_gate = None
+        self._wake_runner = WakeGateRunner(
+            self.wake_gate_factory or create_wake_gate_from_env,
+            on_change=self._on_wake_runner_change,
+        )
+        # Keep consuming and dropping mic frames while the model warms up;
+        # awaiting construction here would buffer them in the device socket.
+        await self._wake_runner.start(wait_ready=False)
 
     @property
     def connected(self) -> bool:
@@ -342,18 +416,7 @@ class GeminiVoiceProxy:
         )
         if tts_mode == "edge":
             logger.info("Gemini TTS mode: edge (text-only Live + edge-tts)")
-        self._wake_gate = (
-            self.wake_gate_factory()
-            if self.wake_gate_factory is not None
-            else create_wake_gate_from_env()
-        )
-        gate = self._wake_gate
-        if gate is not None:
-            gate.is_tts_active = lambda: self._tts_active
-        self._status.on_wake_gate_configured(
-            available=bool(gate is not None and gate.available),
-            state=gate.state.value if gate is not None else "DORMANT",
-        )
+        await self._start_wake_gate()
         self._bridge = self._make_bridge(
             esp32,
             api_key=api_key,
@@ -418,10 +481,7 @@ class GeminiVoiceProxy:
             self._status.on_keepalive_disabled("not_started")
 
     def _wake_gate_state(self) -> str:
-        gate = self._wake_gate
-        if gate is None:
-            return "DORMANT"
-        return gate.state.value
+        return self.wake_gate_state
 
     def _keepalive_should_send(self) -> bool:
         gate = self._wake_gate
@@ -458,16 +518,29 @@ class GeminiVoiceProxy:
             self._status.on_keepalive_stopped()
         await self._cancel_tts_tasks()
         await self._stop_drain_task(cancel=True)
+        runner, self._wake_runner = self._wake_runner, None
         if self._bridge is not None:
             try:
                 await self._bridge.stop()
             except Exception as exc:
                 logger.warning("Gemini Live bridge stop failed: %s", exc)
+        if runner is not None:
+            await runner.stop()
         self._bridge = None
         self._codec = None
         self._edge_tts = None
         self._wake_gate = None
+        self._tts_active = False
+        self._speak_text_active = False
+        self._status.on_tts_state(False, source=self._tts_source)
+        await self._notify_conversation_activity()
         self._ready_event.clear()
+
+    def retire(self) -> None:
+        """Invalidate queued voice work before asynchronous teardown begins."""
+        self._stopped = True
+        self._tts_generation += 1
+        self._status.on_tts_state(False, source=self._tts_source)
 
     async def ensure_connected(self) -> bool:
         if self._stopped:
@@ -529,50 +602,25 @@ class GeminiVoiceProxy:
             logger.warning("Gemini send_audio failed: %s", exc)
             return False
 
-    def _configure_wake_gate(self, gate: WakeGate | None) -> None:
-        if gate is not None:
-            gate.is_tts_active = lambda: self._tts_active
-        self._wake_gate = gate
-
-    def _maybe_rebuild_wake_gate(self) -> WakeGate | None:
-        if self._wake_gate_permanently_failed:
-            return None
-        if self._wake_gate is not None:
-            return self._wake_gate
-        now = time.monotonic()
-        if now < self._wake_gate_next_rebuild_at:
-            return None
-        factory = self.wake_gate_factory or create_wake_gate_from_env
-        try:
-            gate = factory()
-        except Exception as exc:
-            self._wake_gate_failures += 1
-            logger.warning("wake gate rebuild failed (%s): %s", self._wake_gate_failures, exc)
-            if self._wake_gate_failures >= self._wake_gate_rebuild_max:
-                self._wake_gate_permanently_failed = True
-                self._status.on_wake_gate_unavailable()
-                return None
-            delay = min(30.0, 2.0 ** self._wake_gate_failures)
-            self._wake_gate_next_rebuild_at = now + delay
-            return None
-        self._wake_gate_failures = 0
-        self._configure_wake_gate(gate)
-        self._status.on_wake_gate_configured(
-            available=bool(gate is not None and gate.available),
-            state=gate.state.value if gate is not None else "DORMANT",
-        )
-        return gate
-
-    def _handle_wake_gate_process_error(self, exc: Exception) -> None:
-        logger.warning("wake word gate failed; scheduling rebuild: %s", exc)
-        self._wake_gate = None
-        self._wake_gate_failures += 1
-        if self._wake_gate_failures >= self._wake_gate_rebuild_max:
-            self._wake_gate_permanently_failed = True
-            self._status.on_wake_gate_unavailable()
-            return
-        delay = min(30.0, 2.0 ** self._wake_gate_failures)
-        self._wake_gate_next_rebuild_at = time.monotonic() + delay
+    async def _wake_window_closed(self, bridge: GeminiLiveBridge) -> None:
+        self._status.on_wake_closed()
+        # A failed detector has already reported UNAVAILABLE. Preserve that
+        # health state while counting/cleaning up the closed listening window.
+        if self._wake_runner is not None:
+            self._on_wake_runner_change(self._wake_runner)
+        await self._signal_manual_vad_end(bridge)
+        if not self._tts_active and not self._edge_tts_requests and not self._reported_dead:
+            await self._set_leds_safe(0, 0, 0)
+            await self._send_device_emotion_safe(IDLE_EMOTION)
+        clear_context = getattr(bridge, "clear_conversation_context", None)
+        if callable(clear_context):
+            try:
+                result = clear_context()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("wake window local context cleanup failed")
+        await self._notify_conversation_activity()
 
     async def _signal_manual_vad_start(self, bridge: GeminiLiveBridge) -> None:
         if not manual_vad_enabled():
@@ -599,52 +647,61 @@ class GeminiVoiceProxy:
         bridge = self._bridge
         if bridge is None:
             return
-        gate = self._maybe_rebuild_wake_gate()
-        if gate is None:
-            # While the gate is backing off a rebuild or has failed for good, pass the microphone through so the robot is never deaf.
-            await bridge.send_audio(pcm)
+        runner = self._wake_runner
+        if runner is None:
             return
         try:
-            decision = gate.process(pcm)
-        except Exception as exc:
-            self._handle_wake_gate_process_error(exc)
-            await bridge.send_audio(pcm)
+            decision = await runner.process(pcm, tts_active=self._tts_active or self._edge_tts_requests > 0)
+        except WakeGateProcessError as exc:
+            logger.warning("wake word inference failed; dropping microphone frame: %s", exc)
+            if exc.closed:
+                await self._wake_window_closed(bridge)
+            return
+        if self._stopped or runner is not self._wake_runner:
             return
         if decision.closed:
-            self._status.on_wake_closed()
+            await self._wake_window_closed(bridge)
         if decision.woke:
+            try:
+                await self._notify_conversation_activity(required=True)
+            except asyncio.CancelledError:
+                if not self._stopped:
+                    await runner.close()
+                    await self._wake_window_closed(bridge)
+                raise
+            except Exception:
+                await runner.close()
+                await self._wake_window_closed(bridge)
+                return
+            if self._stopped or not self.is_listening:
+                return
             self._status.on_wake_woke()
-        if decision.closed:
-            await self._signal_manual_vad_end(bridge)
-            if not self._tts_active:
-                await self._set_leds_safe(0, 0, 0)
-                await self._send_device_emotion_safe(IDLE_EMOTION)
-            clear_context = getattr(bridge, "clear_conversation_context", None)
-            if callable(clear_context):
-                result = clear_context()
-                if inspect.isawaitable(result):
-                    await result
-        if decision.woke:
             self._reported_dead = False
             await self._signal_manual_vad_start(bridge)
             await self._set_leds_safe(*LISTENING_LED_RGB)
             await self._send_device_emotion_safe(WAKE_CONFIRM_EMOTION)
             if self.wake_confirm_hold_s > 0:
                 await asyncio.sleep(self.wake_confirm_hold_s)
+            if self._stopped or not self.is_listening:
+                return
             await self._send_device_emotion_safe(LISTENING_EMOTION)
             self._signal_wake_chime()
         for chunk in decision.forward_pcm:
+            if self._stopped or runner is not self._wake_runner:
+                return
+            if not decision.bypassed and not self.is_listening:
+                return
             await bridge.send_audio(chunk)
 
     async def _handle_session_dead(self) -> None:
         """Session reconnect exceeded the audio-cache TTL: close listening and report that the session could not be resumed."""
+        if self._stopped:
+            return
         self._reported_dead = True
         try:
-            gate = self._wake_gate
-            if gate is not None:
-                closed = gate.close()
-                if closed:
-                    self._status.on_wake_closed()
+            runner = self._wake_runner
+            if runner is not None and await runner.close() and self._bridge is not None:
+                await self._wake_window_closed(self._bridge)
         except Exception:
             logger.exception("session-dead wake gate close failed")
         try:
@@ -658,18 +715,16 @@ class GeminiVoiceProxy:
 
     async def _handle_bridge_end_conversation(self) -> None:
         """Close the wake window when Gemini explicitly ends the conversation."""
-        gate = self._wake_gate
-        if gate is None:
+        if self._stopped:
             return
-        closed = gate.close()
+        runner = self._wake_runner
+        if runner is None:
+            return
+        closed = await runner.close()
         if closed:
-            self._status.on_wake_closed()
             bridge = self._bridge
             if bridge is not None:
-                await self._signal_manual_vad_end(bridge)
-            if not self._tts_active:
-                await self._set_leds_safe(0, 0, 0)
-                await self._send_device_emotion_safe(IDLE_EMOTION)
+                await self._wake_window_closed(bridge)
 
     async def try_handle_device_mcp(self, message: dict[str, Any]) -> bool:
         """Device MCP responses go back to the gateway, not to us.
@@ -727,9 +782,15 @@ class GeminiVoiceProxy:
         self._speak_text_active = True
         self._speak_text_frames = 0
         try:
+            await self._notify_conversation_activity(required=True)
             await self._send_text_prompt(prompt)
+        except asyncio.CancelledError:
+            self._speak_text_active = False
+            await self._notify_conversation_activity()
+            raise
         except Exception as exc:
             self._speak_text_active = False
+            await self._notify_conversation_activity()
             return {
                 "ok": False,
                 "text": text,
@@ -758,6 +819,7 @@ class GeminiVoiceProxy:
         finally:
             if generation == self._tts_generation:
                 self._speak_text_active = False
+                await self._notify_conversation_activity()
 
         frames_sent = self._speak_text_frames if generation == self._tts_generation else 0
         return {
@@ -781,15 +843,23 @@ class GeminiVoiceProxy:
         reverting the bridge_factory call to ``on_text=self._handle_gemini_text``.
         Not used by the default AUDIO path.
         """
+        if self._stopped:
+            return
         self._status.record_transcript(text)
         provider = self._edge_tts
         if provider is None:
             return
 
         async def speak_in_background() -> None:
-            result = await provider.speak_text(text)
-            if not result.get("ok"):
-                logger.warning("edge-tts failed: %s", result.get("error"))
+            self._edge_tts_requests += 1
+            try:
+                await self._notify_conversation_activity(required=True)
+                result = await provider.speak_text(text)
+                if not result.get("ok"):
+                    logger.warning("edge-tts failed: %s", result.get("error"))
+            finally:
+                self._edge_tts_requests -= 1
+                await self._notify_conversation_activity()
 
         task = asyncio.create_task(speak_in_background(), name="edge-tts-speak")
         self._tts_tasks.add(task)
@@ -805,7 +875,7 @@ class GeminiVoiceProxy:
         text to a TTS engine in AUDIO mode; the speaker is already saying
         the words via native PCM.
         """
-        if text:
+        if text and not self._stopped:
             logger.info("gemini transcript: %s", text)
             self._status.record_transcript(text)
 
@@ -1004,16 +1074,27 @@ class GeminiVoiceProxy:
     async def _begin_tts(self) -> bool:
         """Emit the start envelope just before the first Opus frame."""
         assert self._send_to_device is not None
+        generation = self._tts_generation
+        self._tts_active = True
         try:
+            await self._notify_conversation_activity(required=True)
+            if self._stopped or generation != self._tts_generation:
+                return False
             await self._send_to_device(json.dumps({"type": "tts", "state": "start"}))
             await self._send_to_device(
                 json.dumps({"type": "tts", "state": "sentence_start", "text": ""})
             )
+        except asyncio.CancelledError:
+            if generation == self._tts_generation:
+                self._tts_active = False
+                await self._notify_conversation_activity()
+            raise
         except Exception as exc:
             logger.warning("tts.start envelope failed: %s", exc)
+            self._tts_active = False
+            await self._notify_conversation_activity()
             return False
-        self._tts_active = True
-        self._status.on_tts_state(True)
+        self._status.on_tts_state(True, source=self._tts_source)
         # Switch the avatar to a "talking" expression so the face doesn't freeze
         # while Gemini speaks (firmware stops the idle loop in Speaking state).
         # Fire-and-forget for the same reason as the LED dispatch below.
@@ -1062,6 +1143,8 @@ class GeminiVoiceProxy:
 
     async def _set_leds_safe(self, r: int, g: int, b: int) -> None:
         """USB-first, WS-fallback LED dispatch. Never raises."""
+        if self._stopped:
+            return
         args = {"r": r, "g": g, "b": b}
         logger.info("status LED dispatch requested rgb=(%s,%s,%s)", r, g, b)
         usb = self.usb_transport
@@ -1186,6 +1269,8 @@ class GeminiVoiceProxy:
 
     async def _send_device_emotion_safe(self, emotion: str) -> None:
         """Best-effort ``llm.emotion`` expression dispatch. Never raises."""
+        if self._stopped:
+            return
         esp32 = self.esp32_ref() if self.esp32_ref is not None else None
         if esp32 is not None and getattr(esp32, "device_connected", False):
             send_emotion = getattr(esp32, "send_emotion", None)
@@ -1296,12 +1381,13 @@ class GeminiVoiceProxy:
             except Exception as exc:
                 logger.warning("tts.stop envelope failed: %s", exc)
             self._tts_active = False
-            self._status.on_tts_state(False)
+            self._status.on_tts_state(False, source=self._tts_source)
             self._prebuffer_satisfied = False
             self._pcm_prebuffer.clear()
             self._signal_speaking_avatar("idle")
             self._signal_speaking_leds(*self._post_tts_led_rgb())
             self._clear_turn_emotion_face()
+        await self._notify_conversation_activity()
 
     async def _abort_in_flight_tts(self) -> None:
         """Drop in-flight TTS and tell the device to leave Speaking state.
@@ -1324,7 +1410,8 @@ class GeminiVoiceProxy:
             except Exception:
                 logger.exception("edge-tts abort failed")
         self._tts_active = False
-        self._status.on_tts_state(False)
+        self._speak_text_active = False
+        self._status.on_tts_state(False, source=self._tts_source)
         self._prebuffer_satisfied = False
         self._pcm_prebuffer.clear()
         if was_active and self._send_to_device is not None:
@@ -1337,6 +1424,7 @@ class GeminiVoiceProxy:
                 logger.debug("abort tts.stop drop: %s", exc)
             self._signal_speaking_leds(*self._post_tts_led_rgb())
         self._clear_turn_emotion_face()
+        await self._notify_conversation_activity()
 
     def _post_tts_led_rgb(self) -> tuple[int, int, int]:
         if self._reported_dead:

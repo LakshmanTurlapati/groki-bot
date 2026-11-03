@@ -11,12 +11,13 @@ let package = Package(
     ],
     targets: [
         .target(name: "CameraSelection", path: "CameraSelection"),
-        .testTarget(name: "CameraSelectionTests", dependencies: ["CameraSelection"], path: "Tests"),
+        .target(name: "FrameInput", path: "FrameInput"),
+        .testTarget(name: "CameraSelectionTests", dependencies: ["CameraSelection", "FrameInput"], path: "Tests"),
         .executableTarget(
             name: "GrokiVisionTracker",
-            dependencies: ["CameraSelection"],
+            dependencies: ["CameraSelection", "FrameInput"],
             path: ".",
-            exclude: ["CameraSelection", "Tests", "live-view", "README.md"],
+            exclude: ["CameraSelection", "FrameInput", "Tests", "live-view", "README.md"],
             sources: ["GrokiVisionTracker.swift"]
         ),
     ]

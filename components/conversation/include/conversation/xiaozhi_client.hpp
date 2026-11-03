@@ -38,6 +38,12 @@ public:
     XiaoZhiClient& operator=(const XiaoZhiClient&) = delete;
 
     void set_event_callback(EventCallback cb) override;
+
+    // When true, start() streams Opus and XiaoZhi JSON over the USB voice
+    // port instead of opening `url`. The Wi-Fi WebSocket path is unchanged
+    // when this stays false. Call it before start(); the conversation task
+    // stops and starts again to switch.
+    void set_usb_transport(bool enabled);
     tl::expected<void, ConversationError> start(const ConversationConfig& config) override;
     void stop() override;
     tl::expected<void, ConversationError> push_audio(std::span<const std::int16_t> pcm) override;

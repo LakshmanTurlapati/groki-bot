@@ -5,12 +5,10 @@ dependencies:
   # runs in ~150 µs on the ESP32-S3 HiFi SIMD path so fits the 16 ms
   # chunk budget.
   espressif/esp-dsp: "^1.5.0"
-  # GC0308 DVP camera + QR decoder for the connpass-QR feature. Both are
-  # gated on the CONFIG_STACKCHAN_CAMERA_ENABLED Kconfig knob (see
-  # components/board/Kconfig) so the atoms3r profile, which has no GC0308,
-  # never compiles or links them — that's what the `rules:` block below is
-  # for in the IDF component manager manifest.
-  espressif/esp32-camera: "^2.0.15"
+  # GC0308 DVP capture and QR decoding. Their callers are gated by
+  # CONFIG_STACKCHAN_CAMERA_ENABLED; these dependencies are always fetched.
+  # Pinned: the board supplies the private SCCB interface via M5Unified.
+  espressif/esp32-camera: "2.1.7"
   espressif/quirc: "^1.2.0"
   # [ASR Phase 0] esp-sr: on-device wake word (WakeNet) + AFE. Fetched
   # always but only used when CONFIG_STACKCHAN_ASR_ENABLED (models selected

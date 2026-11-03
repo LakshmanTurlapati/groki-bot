@@ -45,3 +45,23 @@ target_include_directories(conversation_test_control_dispatch PRIVATE ${CONVERSA
 target_link_libraries(conversation_test_control_dispatch PRIVATE cjson_host)
 target_compile_options(conversation_test_control_dispatch PRIVATE -Wall -Wextra)
 add_test(NAME control_dispatch COMMAND conversation_test_control_dispatch)
+
+add_executable(conversation_test_usb_voice_framer
+    test_usb_voice_framer.cpp
+    ${CONVERSATION_ROOT}/usb_voice_framer.cpp
+    ${CONVERSATION_ROOT}/usb_voice_port.cpp
+)
+target_include_directories(conversation_test_usb_voice_framer PRIVATE ${CONVERSATION_ROOT}/include)
+target_compile_options(conversation_test_usb_voice_framer PRIVATE -Wall -Wextra)
+add_test(NAME usb_voice_framer COMMAND conversation_test_usb_voice_framer)
+
+find_package(Threads REQUIRED)
+add_executable(conversation_test_usb_voice_port
+    test_usb_voice_port.cpp
+    ${CONVERSATION_ROOT}/usb_voice_port.cpp
+)
+target_include_directories(conversation_test_usb_voice_port PRIVATE ${CONVERSATION_ROOT}/include)
+target_link_libraries(conversation_test_usb_voice_port PRIVATE Threads::Threads)
+target_compile_options(conversation_test_usb_voice_port PRIVATE -Wall -Wextra)
+add_test(NAME usb_voice_port COMMAND conversation_test_usb_voice_port)
+set_tests_properties(usb_voice_port PROPERTIES TIMEOUT 10)
