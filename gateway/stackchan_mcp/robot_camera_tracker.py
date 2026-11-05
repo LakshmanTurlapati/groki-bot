@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 import aiohttp
 
 from .face_tracker import autostart_enabled, default_tracker_binary
+from .usb_transport import CameraSleeping
 
 logger = logging.getLogger(__name__)
 FRAME_BYTES = 320 * 240 * 2
@@ -42,6 +43,8 @@ class RobotCameraConfig:
     url_override: str = ""
     password: str = field(default="", repr=False)
     fps: float = 4.0
+    # Each capture briefly stalls the face renderer, which shows on a talking mouth.
+    speaking_fps: float = 2.0
     http_timeout_s: float = 5.0
     detector_timeout_s: float = 0.5
     frame_max_age_s: float = 1.0
@@ -56,6 +59,8 @@ class RobotCameraConfig:
     def __post_init__(self) -> None:
         if not math.isfinite(self.fps) or not 0 < self.fps <= 8:
             raise ValueError("STACKCHAN_CAMERA_FPS must be greater than zero and at most 8")
+        if not math.isfinite(self.speaking_fps) or not 0 < self.speaking_fps <= 8:
+            raise ValueError("STACKCHAN_CAMERA_SPEAKING_FPS must be greater than zero and at most 8")
         if self.usb_encoding not in {"jpeg", "rgb565be"}:
             raise ValueError("STACKCHAN_CAMERA_USB_FORMAT must be jpeg or rgb565be")
         if not isinstance(self.jpeg_quality, int) or not 60 <= self.jpeg_quality <= 90:
@@ -75,10 +80,15 @@ class RobotCameraConfig:
             fps = float(os.getenv("STACKCHAN_CAMERA_FPS", "4"))
         except ValueError:
             raise ValueError("STACKCHAN_CAMERA_FPS must be a number") from None
+        try:
+            speaking_fps = float(os.getenv("STACKCHAN_CAMERA_SPEAKING_FPS", "2"))
+        except ValueError:
+            raise ValueError("STACKCHAN_CAMERA_SPEAKING_FPS must be a number") from None
         return cls(
             url_override=os.getenv("STACKCHAN_CAMERA_URL", "").strip(),
             password=os.getenv("STACKCHAN_CAMERA_PASSWORD", ""),
             fps=fps,
+            speaking_fps=speaking_fps,
             usb_encoding=os.getenv("STACKCHAN_CAMERA_USB_FORMAT", "jpeg").strip().lower(),
             motion=os.getenv("STACKCHAN_CAMERA_TRACKING_MOTION", "1").lower() in {"1", "true", "yes"},
             binary=os.getenv("STACKCHAN_CAMERA_BINARY", "1").lower() in {"1", "true", "yes"},
@@ -118,6 +128,8 @@ async def capture_frame(
     async with session.get(url, auth=auth, allow_redirects=False) as response:
         if response.status == 409:
             raise CameraBusy("busy")
+        if response.status == 423:
+            raise CameraSleeping("sleeping")
         if response.status == 401:
             raise CameraError("auth_required")
         if response.status != 200:
@@ -236,15 +248,22 @@ class SwiftFrameDetector:
 
 
 class RobotCameraTracker:
+    # Sleeping refusals cost no capture; this poll is how a wake-up is noticed.
+    SLEEPING_POLL_S = 1.0
+    BUSY_RETRY_S = 0.03
+    SPEAKING_BUSY_RETRY_S = 0.25
+
     def __init__(
         self, esp32: Any, *,
         on_detection: Callable[[Face | None, RobotFrameContext], Awaitable[None]],
         tracking_allowed: Callable[[], bool],
         config: RobotCameraConfig | None = None,
+        is_speaking: Callable[[], bool] = lambda: False,
     ) -> None:
         self.esp32 = esp32
         self.on_detection = on_detection
         self.tracking_allowed = tracking_allowed
+        self.is_speaking = is_speaking
         self.config = config or RobotCameraConfig.from_env()
         self._detector = SwiftFrameDetector(self.config.detector_timeout_s)
         self._task: asyncio.Task[None] | None = None
@@ -422,11 +441,16 @@ class RobotCameraTracker:
                             self._state = "discarded_frame"
                     else:
                         self._state = "discarded_frame"
+                except CameraSleeping:
+                    self._state = "sleeping"
+                    await asyncio.sleep(self.SLEEPING_POLL_S)
+                    continue
                 except CameraBusy:
                     self._state = "busy"
                     # Servo settling is not a captured frame. Retry promptly
                     # so the idle hold does not expire between useful images.
-                    await asyncio.sleep(0.03)
+                    # During speech a refusal usually lasts the whole reply.
+                    await asyncio.sleep(self.SPEAKING_BUSY_RETRY_S if self.is_speaking() else self.BUSY_RETRY_S)
                     continue
                 except FileNotFoundError:
                     self._state = "detector_missing"
@@ -451,5 +475,6 @@ class RobotCameraTracker:
                     backoff = min(backoff * 2, config.max_backoff_s)
                     continue
                 # The loop owns one frame through its decision; there is no pending-frame queue.
-                remaining = 1.0 / config.fps - (asyncio.get_running_loop().time() - started)
+                fps = min(config.fps, config.speaking_fps) if self.is_speaking() else config.fps
+                remaining = 1.0 / fps - (asyncio.get_running_loop().time() - started)
                 await asyncio.sleep(max(0.0, remaining))

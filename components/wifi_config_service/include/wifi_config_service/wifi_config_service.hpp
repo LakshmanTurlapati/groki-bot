@@ -174,6 +174,7 @@ struct CameraCaptureOptions {
 struct CameraCaptureMetadata {
     std::string frame_id;
     bool tracking_busy = false;
+    bool tracking_sleeping = false;
     float capture_yaw = 0, capture_pitch = 0;
     std::uint32_t capture_ms = 0;
     bool motion_compensated = false;
@@ -219,6 +220,13 @@ void set_lt_config_sink(LtConfigSink sink);
 //            "surprised","dizzy","affection","bored"}
 using McpExpressionSink = std::function<void(std::string_view name)>;
 void set_mcp_expression_sink(McpExpressionSink sink);
+
+// `POST /mcp/activity?ttl_ms=N` — Grok Bot run state for the face. Body is
+// the state name (thinking / working / waiting / blocked / done / failed /
+// listening, or "idle" to clear); ttl_ms is optional (0 = per-state
+// default). The sink returns false for an unknown name (HTTP 400).
+using McpActivitySink = std::function<bool(std::string_view state, std::uint32_t ttl_ms)>;
+void set_mcp_activity_sink(McpActivitySink sink);
 
 // `POST /mcp/balloon?hold_ms=N` — show text in the avatar balloon.
 // `hold_ms == 0` means "use balloon defaults" (Avatar::set_balloon_text).

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grok Bot Idle face</title>
+<style>
+body{margin:0;background:#121212}
+@keyframes bodyIdle{0%{transform:translate(0,0) scale(1.053)}6%,16%{transform:translate(0,0) scale(1.067)}25%,41%{transform:translate(0,0) scale(1)}44%,52%{transform:translate(-14px,-3px) scale(1)}55%,62%{transform:translate(-8px,15px) scale(1)}65%,70%{transform:translate(-7px,16px) scale(1)}73%,85%{transform:translate(0,0) scale(1)}96%{transform:translate(0,0) scale(1)}100%{transform:translate(0,0) scale(1.053)}}
+@keyframes glance{0%,41%{transform:translate(0,0) rotate(0deg)}44%,52%{transform:translate(-34px,-8px) rotate(10deg)}55%,62%{transform:translate(19px,10px) rotate(-10deg)}65%,70%{transform:translate(7px,30px) rotate(-4deg)}73%,85%{transform:translate(6px,-4px) rotate(-14deg)}90%,100%{transform:translate(0,0) rotate(0deg)}}
+@keyframes blink{0%,88%{transform:scaleY(1)}92%,95%{transform:scaleY(0.25)}99%,100%{transform:scaleY(1)}}
+.pos{animation:bodyIdle 10s ease-in-out infinite;transform-origin:50% 50%}
+.eyes{animation:glance 10s ease-out infinite;transform-origin:50% 50%}
+.eye{animation:blink 2.6s linear infinite;transform-origin:50% 50%}
+</style>
+<style>html,body{height:100%}body{display:grid;place-items:center;margin:0}</style>
+</head>
+<body>
+<div style="width: 320px; height: 240px; background: #121212; position: relative; overflow: hidden">
+<div class="pos" style="position: absolute; left: 61.5px; top: 52.5px; width: 197px; height: 135px">
+<div style="position: absolute; left: 0; top: 0; width: 197px; height: 135px; transform: rotate(-15deg)">
+<div style="position: absolute; left: 0; top: 0; width: 197px; height: 135px; border-radius: 67.5px; background: #777777; overflow: hidden">
+<div class="eyes" style="position: absolute; left: 86.5px; top: 13.5px; width: 90px; height: 70px">
+<div style="position: absolute; left: 9px; top: 11.5px; width: 20px; height: 47px; transform: rotate(-11deg)">
+<div class="eye" style="width: 20px; height: 47px; border-radius: 10px; background: #121212"></div>
+</div>
+<div style="position: absolute; left: 61.5px; top: 11.5px; width: 20px; height: 47px; transform: rotate(-11deg)">
+<div class="eye" style="width: 20px; height: 47px; border-radius: 10px; background: #121212"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>

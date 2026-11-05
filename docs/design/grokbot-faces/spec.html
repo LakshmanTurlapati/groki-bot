@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face and motion spec</title>
+<style>
+body{margin:0;background:#0E0E10;color:#E8E8EA;font-family:"IBM Plex Sans",system-ui,sans-serif}
+a{color:#9DB9FF}a:hover{color:#C7D7FF}
+h1,h2{font-family:"Space Grotesk","IBM Plex Sans",system-ui,sans-serif}
+table{border-collapse:collapse;width:100%;min-width:1040px}
+th,td{text-align:left;vertical-align:top;padding:12px 14px;border-top:1px solid #2A2A2E;font-size:14px;line-height:1.45}
+th{font-family:"Space Grotesk",sans-serif;font-weight:700;color:#FFFFFF;background:#17171A;border-top:0}
+td:first-child{font-family:"Space Grotesk",sans-serif;font-weight:700;color:#FFFFFF;white-space:nowrap}
+code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;color:#F2D45C}
+.k{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;color:#B8B8BC}
+.v{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:15px;color:#FFFFFF}
+</style>
+</head>
+<body>
+<div style="max-width: 1360px; margin: 0 auto; padding: 56px 40px 72px; display: flex; flex-direction: column; gap: 40px">
+<div style="display: flex; flex-direction: column; gap: 14px">
+<h1 style="margin: 0; font-size: 40px; line-height: 1.1; font-weight: 700">Grok Bot on Stack-chan: face and motion spec</h1>
+<p style="margin: 0; font-size: 17px; line-height: 1.5; color: #B8B8BC; max-width: 920px; text-wrap: pretty">Motion is taken from the Grok Bot app's own mark engine (sprites.html, sampled at 20 Hz); body shape, eye shape and color are taken from the grey pill reference. Engine offsets are converted at 4.56 px per engine unit, and eye relative offsets are scaled by 0.84 (the pill's eye height over the engine's) and clamped so the eyes never leave the pill. Eyes are holes in the body color, exactly as the engine draws them. Every number in the face and timing columns is measured; triggers, servo poses and exits are this spec's inference, because Grok Bot never streams its state to a device.</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 style="margin: 0; font-size: 24px">Base geometry (from the pill reference)</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 14px">
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">body</div><div class="v">capsule 197 x 135, radius 67.5, rotated −15°, centre (160, 120); measured aspect 1.46</div></div>
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">color</div><div class="v">body #777777, ground #121212, eyes #121212 (holes)</div></div>
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">eyes at rest</div><div class="v">20 x 47 pills, radius 10, leaning −11° inside the body (−26° on screen)</div></div>
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">eye placement</div><div class="v">body frame: centres at u = 7 and 59.5, v = −19; pair sits 33 px right and 19 px up of the body centre</div></div>
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">blink</div><div class="v">close 100 ms to 25 % height, hold 75 ms, open 100 ms; every 2.0 to 2.9 s</div></div>
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">swell</div><div class="v">body scale 1.00 to 1.067 and back over 2.5 s, once per idle cycle; continuous 5.6 s when sleeping</div></div>
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">speech</div><div class="v">no mouth; while TTS plays, squash along the pill's short axis: sx = 1 + 0.04a, sy = 1 − 0.14a, a = audio level at 20 Hz</div></div>
+<div style="background: #17171A; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px"><div class="k">servos</div><div class="v">yaw ±40°, pitch −10° to +25°, 30°/s quadratic ease in out; hold during TTS</div></div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 style="margin: 0; font-size: 24px">The six avatar states</h2>
+<div style="overflow-x: auto; border-radius: 10px; background: #121214">
+<table>
+<thead><tr><th>State</th><th>Enter when the robot sees</th><th>Face</th><th>Timing (engine)</th><th>Head servos</th><th>Exit</th></tr></thead>
+<tbody>
+<tr><td>Idle</td><td>No run in flight, or 1.5 s after Done.</td><td>Rest pose, swell at the start of the cycle, then four glances: up left (−34, −8, +10°), down right (+19, +10, −10°), down (+7, +30, −4°), up right (+6, −4, −14°). The body drifts after the gaze by up to 16 px.</td><td>10 s cycle: 4 s still, glances held 0.7 to 1.2 s with 300 ms ease out moves.</td><td>Face tracking at 30°/s; each glance becomes a 10° to 15° head turn the same way.</td><td>Request sent to Thinking. Mic opens to Listening.</td></tr>
+<tr><td>Thinking</td><td>Webhook accepted (<code>runUuid</code>) or <code>gbot send</code> issued, no <code>first</code> yet.</td><td>Face collapses to three dots 74 px apart: round side dots 56 px, and the body itself as a 56 x 38 mini pill in the middle. Each pulses scale 0.8 to 1, opacity 0.5 to 1, and rises 10.5 px at its peak.</td><td>1.4 s period, peaks in order right, left, middle (0.6 s then 0.4 s apart).</td><td>Pitch +10°, yaw sway ±8° over 6 s.</td><td><code>first</code> to Working. Error or 110 s timeout to Blocked.</td></tr>
+<tr><td>Working</td><td><code>first</code> received, <code>more</code> still arriving. Never before text arrives.</td><td>Eyes grow to 32 x 62 and roam the whole pill with pair tilts from −30° to +16°; the body follows by up to 13 px.</td><td>4 s loop of five gazes, held 0.4 to 0.5 s, 0.3 s moves. Blink every 3.6 s.</td><td>Pitch −8°, hold; no tracking. Speech squash on reply chunks.</td><td><code>done</code> to Done. Question in reply to Waiting. Error to Blocked.</td></tr>
+<tr><td>Waiting</td><td>Reply classified as a question or approval ask, or <code>gbot</code> idle past 90 s after "working on it".</td><td>Body shrinks to a 36 x 25 mini pill; five particles orbit it on an ellipse 99 x 42, tilted −15° to match the body. Size 24 px at the front (top) to 12 px at the back; opacity 1 to 0.18.</td><td>Orbit period 3.75 s clockwise, particles 0.75 s apart. Size follows 6 + 6·max(0, cos θ); opacity clamp(0.59 + 1.64·cos θ, 0.18, 1).</td><td>Pitch +6° toward the user, tracking on.</td><td>User speaks to Listening. 10 min idle to Sleeping.</td></tr>
+<tr><td>Blocked</td><td>HTTP 400, 401 or 5xx, <code>{"ok": false}</code> from <code>gbot</code>, or the 110 s timeout.</td><td>Eyes dart 24 px right; the body shrinks to 84 % while the eyes blink half shut, pinch from 52 to 27 px apart and fold into a "&gt;&lt;" pair of chevrons, then shake side to side.</td><td>2.1 s loop: still 0.45 s, dart 0.2 s, hold 0.15 s, shrink and pinch 0.25 s, two shakes at 3.3 Hz (eyes ±17 px, body ±6 px), recover 0.4 s with a blink.</td><td>Head shake yaw ±10° at 3.3 Hz in step with the eyes, then pitch −12° hold.</td><td>Head touch or retry to Thinking. After 30 s to Failed.</td></tr>
+<tr><td>Done</td><td><code>done</code> with reason idle or max, or the Routine POSTs its reply.</td><td>Eyes close into thick arches 45 x 34 (17 px stroke), 52 px apart. Anticipation squash 1.067 x 0.965, take off stretch 1 x 1.10, two hops of 31 px, landing squash 1.04 x 0.97. In the air the eyes look up left (−12°) then up right (+18°).</td><td>3.9 s clip; on the robot play once from the anticipation (about 2.2 s), then return.</td><td>Two nods, 0° to +10° to 0° at 60°/s, timed to the hops.</td><td>Automatic to Idle after 1.5 s.</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 style="margin: 0; font-size: 24px">Three more engine states the robot needs</h2>
+<div style="overflow-x: auto; border-radius: 10px; background: #121214">
+<table>
+<thead><tr><th>State</th><th>Enter when the robot sees</th><th>Face</th><th>Timing (engine)</th><th>Head servos</th><th>Exit</th></tr></thead>
+<tbody>
+<tr><td>Listening</td><td>Wake word or voice activity.</td><td>Eyes become unequal round blobs (44 x 41 and 42 x 40 at full size) that turn like a head looking around: the far eye foreshortens to 55 % width when looking right, both flatten when looking up.</td><td>5 s loop of four looks, held 0.6 to 0.9 s, 0.3 to 0.6 s moves. No blink.</td><td>Face tracking on, 5° lean toward the voice.</td><td>Speech ends to Thinking.</td></tr>
+<tr><td>Failed</td><td>Error after Blocked, or a refusal in the reply.</td><td>Body sinks 22 px; eyes shrink to 80 %, drop 29 px and splay into "/ \".</td><td>Hold 2.5 s, recover 0.3 s.</td><td>Pitch −12°, yaw 0°, hold.</td><td>Automatic to Idle.</td></tr>
+<tr><td>Sleeping</td><td>10 min without input, or quiet hours.</td><td>Eyes close into 37 x 24 pills aligned with the body; the body swells to 1.067 and the eyes drift 12 px back at the peak.</td><td>5.6 s breath cycle.</td><td>Pitch −10°, torque off.</td><td>Any input to Idle via a blink.</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr)); gap: 24px">
+<div style="display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-size: 20px">Where the pill changes the engine</h2>
+<p style="margin: 0; font-size: 15px; line-height: 1.5; color: #B8B8BC; text-wrap: pretty">Only the body takes the pill shape. When the engine shrinks the body (Thinking, Waiting) the shrunken body stays a pill, while dots and particles stay round. Orbit planes inherit the −15° tilt. Because the eye pair sits up and to the right on the pill, glance and gaze offsets are clamped: upward travel is cut to about 15 px and rightward travel to about 25 px, so motion that went off the circle in the engine stays inside the capsule here.</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-size: 20px">Color</h2>
+<p style="margin: 0; font-size: 15px; line-height: 1.5; color: #B8B8BC; text-wrap: pretty">Default is the reference grey #777777 on #121212. The ink tweak on each board swaps the body color to mirror a Bot's chosen color; eyes stay the ground color so blink and gaze read the same on every ink.</p>
+</div>
+</div>
+</div>
+</body>
+</html>

@@ -17,8 +17,8 @@ struct Palette {
 };
 
 inline constexpr Palette kDefaultPalette{
-    .primary = 0xFFFFu,            // white  (avatar face)
-    .background = 0x0000u,         // black  (canvas background)
+    .primary = 0x73AEu,            // grey #777777 (face body, Grok Bot design)
+    .background = 0x1082u,         // #121212 (ground; eyes are holes in it)
     .secondary = 0xFFE0u,          // yellow (accent)
     // Balloon uses inverted colours so it stands out against the dark face:
     // a solid white panel with black text.

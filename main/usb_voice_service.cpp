@@ -211,7 +211,10 @@ private:
             cJSON* result = cJSON_CreateObject();
             if (!captured || pixels.empty() || (!request.jpeg && pixels.size() != 320 * 240 * 2)) {
                 cJSON_AddBoolToObject(result, "busy", metadata.tracking_busy);
-                cJSON_AddStringToObject(result, "error", metadata.tracking_busy ? "busy" : "capture_failed");
+                cJSON_AddBoolToObject(result, "sleeping", metadata.tracking_sleeping);
+                cJSON_AddStringToObject(result, "error", metadata.tracking_sleeping ? "sleeping"
+                                                         : metadata.tracking_busy   ? "busy"
+                                                                                    : "capture_failed");
                 if (!send_rpc(request.id, result))
                     ESP_LOGW(kTag, "camera request %lu status write failed", static_cast<unsigned long>(request.id));
                 continue;

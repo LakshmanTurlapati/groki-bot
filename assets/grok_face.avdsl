@@ -1,288 +1,83 @@
 -- SPDX-FileCopyrightText: 2026 sefuzhou770801-hub
+-- SPDX-FileCopyrightText: 2026 Joseph Zhou
 -- SPDX-License-Identifier: BSL-1.0
 --
--- Grok bot face, aora edition. Eye shapes are the aora-bot
--- (github.com/sam70361/aora-bot) emotion-ball eye rings: 48-point outlines
--- interpolated per frame in C++ (main/aora_face.hpp: ring pool rotation,
--- four-way expression mixing, aora anims, blink/wink/openness squash) and
--- handed to the VM via the Var::RingBase window as final screen coordinates.
--- The DSL draws them as a fixed 46-triangle strip per eye and keeps the body
--- layer: perfect white circle on black, breathing, joy hop, speech squash,
--- sleeping zzz, petting heart. Body shape never morphs.
+-- Grok Bot pill face. All geometry, timing and expression blending live in
+-- C++ (main/pill_face.hpp): every frame it writes a display list of 28
+-- capsule segments into the face-parameter window, in 320 x 240 design
+-- coordinates with RGB565 colours already resolved from the palette. This
+-- file only rasterizes them, so the same bytecode scales to every panel
+-- through tx() / ty() and canvas_scale.
+--
+-- Segment N = segN_ax, segN_ay, segN_bx, segN_by, segN_r, segN_col:
+-- a capsule from A to B with radius r; r == 0 skips the slot. segN_col is
+-- RGB565 plus end flags above bit 16: +65536 drops the circle at A,
+-- +131072 drops the one at B (both = a rectangle; the Done arches use
+-- them). Slots draw in order: satellites, body, eye halves, arches, then
+-- decorations.
 
-----------------------------------------------------------------------
--- Both eyes as triangle strips over the ring coordinate variables.
-----------------------------------------------------------------------
-fn ring_eyes(color)
-  fill_triangle(ring_l0x, ring_l0y, ring_l1x, ring_l1y, ring_l47x, ring_l47y, color)
-  fill_triangle(ring_l1x, ring_l1y, ring_l47x, ring_l47y, ring_l2x, ring_l2y, color)
-  fill_triangle(ring_l47x, ring_l47y, ring_l2x, ring_l2y, ring_l46x, ring_l46y, color)
-  fill_triangle(ring_l2x, ring_l2y, ring_l46x, ring_l46y, ring_l3x, ring_l3y, color)
-  fill_triangle(ring_l46x, ring_l46y, ring_l3x, ring_l3y, ring_l45x, ring_l45y, color)
-  fill_triangle(ring_l3x, ring_l3y, ring_l45x, ring_l45y, ring_l4x, ring_l4y, color)
-  fill_triangle(ring_l45x, ring_l45y, ring_l4x, ring_l4y, ring_l44x, ring_l44y, color)
-  fill_triangle(ring_l4x, ring_l4y, ring_l44x, ring_l44y, ring_l5x, ring_l5y, color)
-  fill_triangle(ring_l44x, ring_l44y, ring_l5x, ring_l5y, ring_l43x, ring_l43y, color)
-  fill_triangle(ring_l5x, ring_l5y, ring_l43x, ring_l43y, ring_l6x, ring_l6y, color)
-  fill_triangle(ring_l43x, ring_l43y, ring_l6x, ring_l6y, ring_l42x, ring_l42y, color)
-  fill_triangle(ring_l6x, ring_l6y, ring_l42x, ring_l42y, ring_l7x, ring_l7y, color)
-  fill_triangle(ring_l42x, ring_l42y, ring_l7x, ring_l7y, ring_l41x, ring_l41y, color)
-  fill_triangle(ring_l7x, ring_l7y, ring_l41x, ring_l41y, ring_l8x, ring_l8y, color)
-  fill_triangle(ring_l41x, ring_l41y, ring_l8x, ring_l8y, ring_l40x, ring_l40y, color)
-  fill_triangle(ring_l8x, ring_l8y, ring_l40x, ring_l40y, ring_l9x, ring_l9y, color)
-  fill_triangle(ring_l40x, ring_l40y, ring_l9x, ring_l9y, ring_l39x, ring_l39y, color)
-  fill_triangle(ring_l9x, ring_l9y, ring_l39x, ring_l39y, ring_l10x, ring_l10y, color)
-  fill_triangle(ring_l39x, ring_l39y, ring_l10x, ring_l10y, ring_l38x, ring_l38y, color)
-  fill_triangle(ring_l10x, ring_l10y, ring_l38x, ring_l38y, ring_l11x, ring_l11y, color)
-  fill_triangle(ring_l38x, ring_l38y, ring_l11x, ring_l11y, ring_l37x, ring_l37y, color)
-  fill_triangle(ring_l11x, ring_l11y, ring_l37x, ring_l37y, ring_l12x, ring_l12y, color)
-  fill_triangle(ring_l37x, ring_l37y, ring_l12x, ring_l12y, ring_l36x, ring_l36y, color)
-  fill_triangle(ring_l12x, ring_l12y, ring_l36x, ring_l36y, ring_l13x, ring_l13y, color)
-  fill_triangle(ring_l36x, ring_l36y, ring_l13x, ring_l13y, ring_l35x, ring_l35y, color)
-  fill_triangle(ring_l13x, ring_l13y, ring_l35x, ring_l35y, ring_l14x, ring_l14y, color)
-  fill_triangle(ring_l35x, ring_l35y, ring_l14x, ring_l14y, ring_l34x, ring_l34y, color)
-  fill_triangle(ring_l14x, ring_l14y, ring_l34x, ring_l34y, ring_l15x, ring_l15y, color)
-  fill_triangle(ring_l34x, ring_l34y, ring_l15x, ring_l15y, ring_l33x, ring_l33y, color)
-  fill_triangle(ring_l15x, ring_l15y, ring_l33x, ring_l33y, ring_l16x, ring_l16y, color)
-  fill_triangle(ring_l33x, ring_l33y, ring_l16x, ring_l16y, ring_l32x, ring_l32y, color)
-  fill_triangle(ring_l16x, ring_l16y, ring_l32x, ring_l32y, ring_l17x, ring_l17y, color)
-  fill_triangle(ring_l32x, ring_l32y, ring_l17x, ring_l17y, ring_l31x, ring_l31y, color)
-  fill_triangle(ring_l17x, ring_l17y, ring_l31x, ring_l31y, ring_l18x, ring_l18y, color)
-  fill_triangle(ring_l31x, ring_l31y, ring_l18x, ring_l18y, ring_l30x, ring_l30y, color)
-  fill_triangle(ring_l18x, ring_l18y, ring_l30x, ring_l30y, ring_l19x, ring_l19y, color)
-  fill_triangle(ring_l30x, ring_l30y, ring_l19x, ring_l19y, ring_l29x, ring_l29y, color)
-  fill_triangle(ring_l19x, ring_l19y, ring_l29x, ring_l29y, ring_l20x, ring_l20y, color)
-  fill_triangle(ring_l29x, ring_l29y, ring_l20x, ring_l20y, ring_l28x, ring_l28y, color)
-  fill_triangle(ring_l20x, ring_l20y, ring_l28x, ring_l28y, ring_l21x, ring_l21y, color)
-  fill_triangle(ring_l28x, ring_l28y, ring_l21x, ring_l21y, ring_l27x, ring_l27y, color)
-  fill_triangle(ring_l21x, ring_l21y, ring_l27x, ring_l27y, ring_l22x, ring_l22y, color)
-  fill_triangle(ring_l27x, ring_l27y, ring_l22x, ring_l22y, ring_l26x, ring_l26y, color)
-  fill_triangle(ring_l22x, ring_l22y, ring_l26x, ring_l26y, ring_l23x, ring_l23y, color)
-  fill_triangle(ring_l26x, ring_l26y, ring_l23x, ring_l23y, ring_l25x, ring_l25y, color)
-  fill_triangle(ring_l23x, ring_l23y, ring_l25x, ring_l25y, ring_l24x, ring_l24y, color)
-  fill_triangle(ring_r0x, ring_r0y, ring_r1x, ring_r1y, ring_r47x, ring_r47y, color)
-  fill_triangle(ring_r1x, ring_r1y, ring_r47x, ring_r47y, ring_r2x, ring_r2y, color)
-  fill_triangle(ring_r47x, ring_r47y, ring_r2x, ring_r2y, ring_r46x, ring_r46y, color)
-  fill_triangle(ring_r2x, ring_r2y, ring_r46x, ring_r46y, ring_r3x, ring_r3y, color)
-  fill_triangle(ring_r46x, ring_r46y, ring_r3x, ring_r3y, ring_r45x, ring_r45y, color)
-  fill_triangle(ring_r3x, ring_r3y, ring_r45x, ring_r45y, ring_r4x, ring_r4y, color)
-  fill_triangle(ring_r45x, ring_r45y, ring_r4x, ring_r4y, ring_r44x, ring_r44y, color)
-  fill_triangle(ring_r4x, ring_r4y, ring_r44x, ring_r44y, ring_r5x, ring_r5y, color)
-  fill_triangle(ring_r44x, ring_r44y, ring_r5x, ring_r5y, ring_r43x, ring_r43y, color)
-  fill_triangle(ring_r5x, ring_r5y, ring_r43x, ring_r43y, ring_r6x, ring_r6y, color)
-  fill_triangle(ring_r43x, ring_r43y, ring_r6x, ring_r6y, ring_r42x, ring_r42y, color)
-  fill_triangle(ring_r6x, ring_r6y, ring_r42x, ring_r42y, ring_r7x, ring_r7y, color)
-  fill_triangle(ring_r42x, ring_r42y, ring_r7x, ring_r7y, ring_r41x, ring_r41y, color)
-  fill_triangle(ring_r7x, ring_r7y, ring_r41x, ring_r41y, ring_r8x, ring_r8y, color)
-  fill_triangle(ring_r41x, ring_r41y, ring_r8x, ring_r8y, ring_r40x, ring_r40y, color)
-  fill_triangle(ring_r8x, ring_r8y, ring_r40x, ring_r40y, ring_r9x, ring_r9y, color)
-  fill_triangle(ring_r40x, ring_r40y, ring_r9x, ring_r9y, ring_r39x, ring_r39y, color)
-  fill_triangle(ring_r9x, ring_r9y, ring_r39x, ring_r39y, ring_r10x, ring_r10y, color)
-  fill_triangle(ring_r39x, ring_r39y, ring_r10x, ring_r10y, ring_r38x, ring_r38y, color)
-  fill_triangle(ring_r10x, ring_r10y, ring_r38x, ring_r38y, ring_r11x, ring_r11y, color)
-  fill_triangle(ring_r38x, ring_r38y, ring_r11x, ring_r11y, ring_r37x, ring_r37y, color)
-  fill_triangle(ring_r11x, ring_r11y, ring_r37x, ring_r37y, ring_r12x, ring_r12y, color)
-  fill_triangle(ring_r37x, ring_r37y, ring_r12x, ring_r12y, ring_r36x, ring_r36y, color)
-  fill_triangle(ring_r12x, ring_r12y, ring_r36x, ring_r36y, ring_r13x, ring_r13y, color)
-  fill_triangle(ring_r36x, ring_r36y, ring_r13x, ring_r13y, ring_r35x, ring_r35y, color)
-  fill_triangle(ring_r13x, ring_r13y, ring_r35x, ring_r35y, ring_r14x, ring_r14y, color)
-  fill_triangle(ring_r35x, ring_r35y, ring_r14x, ring_r14y, ring_r34x, ring_r34y, color)
-  fill_triangle(ring_r14x, ring_r14y, ring_r34x, ring_r34y, ring_r15x, ring_r15y, color)
-  fill_triangle(ring_r34x, ring_r34y, ring_r15x, ring_r15y, ring_r33x, ring_r33y, color)
-  fill_triangle(ring_r15x, ring_r15y, ring_r33x, ring_r33y, ring_r16x, ring_r16y, color)
-  fill_triangle(ring_r33x, ring_r33y, ring_r16x, ring_r16y, ring_r32x, ring_r32y, color)
-  fill_triangle(ring_r16x, ring_r16y, ring_r32x, ring_r32y, ring_r17x, ring_r17y, color)
-  fill_triangle(ring_r32x, ring_r32y, ring_r17x, ring_r17y, ring_r31x, ring_r31y, color)
-  fill_triangle(ring_r17x, ring_r17y, ring_r31x, ring_r31y, ring_r18x, ring_r18y, color)
-  fill_triangle(ring_r31x, ring_r31y, ring_r18x, ring_r18y, ring_r30x, ring_r30y, color)
-  fill_triangle(ring_r18x, ring_r18y, ring_r30x, ring_r30y, ring_r19x, ring_r19y, color)
-  fill_triangle(ring_r30x, ring_r30y, ring_r19x, ring_r19y, ring_r29x, ring_r29y, color)
-  fill_triangle(ring_r19x, ring_r19y, ring_r29x, ring_r29y, ring_r20x, ring_r20y, color)
-  fill_triangle(ring_r29x, ring_r29y, ring_r20x, ring_r20y, ring_r28x, ring_r28y, color)
-  fill_triangle(ring_r20x, ring_r20y, ring_r28x, ring_r28y, ring_r21x, ring_r21y, color)
-  fill_triangle(ring_r28x, ring_r28y, ring_r21x, ring_r21y, ring_r27x, ring_r27y, color)
-  fill_triangle(ring_r21x, ring_r21y, ring_r27x, ring_r27y, ring_r22x, ring_r22y, color)
-  fill_triangle(ring_r27x, ring_r27y, ring_r22x, ring_r22y, ring_r26x, ring_r26y, color)
-  fill_triangle(ring_r22x, ring_r22y, ring_r26x, ring_r26y, ring_r23x, ring_r23y, color)
-  fill_triangle(ring_r26x, ring_r26y, ring_r23x, ring_r23y, ring_r25x, ring_r25y, color)
-  fill_triangle(ring_r23x, ring_r23y, ring_r25x, ring_r25y, ring_r24x, ring_r24y, color)
-end
-
-----------------------------------------------------------------------
--- One "z" glyph: two bars and a diagonal band (aora sleep signature).
-----------------------------------------------------------------------
-fn draw_z(x, y, s, color)
-  let th = clamp(s * 0.24, 1, 99)
-  fill_rect(x, y, s, th, color)
-  fill_rect(x, y + s - th, s, th, color)
-  fill_triangle(x + s - th, y + th, x + s, y + th, x, y + s - th, color)
-  fill_triangle(x + s, y + th, x + th, y + s - th, x, y + s - th, color)
-end
-
-----------------------------------------------------------------------
--- One heart: two lobes and a point. Floats up while being petted.
-----------------------------------------------------------------------
-fn draw_heart(x, y, s, color)
-  fill_circle(x - s * 0.5, y - s * 0.35, s * 0.55, color)
-  fill_circle(x + s * 0.5, y - s * 0.35, s * 0.55, color)
-  fill_triangle(x - s * 1.02, y - s * 0.1, x + s * 1.02, y - s * 0.1, x, y + s * 1.1, color)
-end
-
-----------------------------------------------------------------------
--- Axis-aligned ellipse via scanlines. Used for speech squash so the
--- resting circle does not become a polygon the moment the mouth opens.
-----------------------------------------------------------------------
-fn fill_ellipse(cx, cy, rx, ry, color)
-  let y = -ry
-  while y <= ry do
-    let ny = y / ry
-    let inside = 1 - ny * ny
-    if inside > 0 then
-      let hw = rx * sqrt(inside)
-      fill_rect(cx - hw, cy + y, hw * 2 + 1, 1, color)
-    end
-    y = y + 1
+fn seg(ax, ay, bx, by, r, col)
+  if r <= 0 then
+    return
+  end
+  let flags = floor(col / 65536)
+  let c = col - flags * 65536
+  let flat_b = floor(flags / 2)
+  let flat_a = flags - flat_b * 2
+  let x0 = tx(ax)
+  let y0 = ty(ay)
+  let x1 = tx(bx)
+  let y1 = ty(by)
+  let rad = r * canvas_scale
+  if flat_a == 0 then
+    fill_circle(round(x0), round(y0), round(rad), c)
+  end
+  let dx = x1 - x0
+  let dy = y1 - y0
+  let len = sqrt(dx * dx + dy * dy)
+  if len < 0.5 then
+    return
+  end
+  -- Half a pixel wider than the end circles so the quad never leaves a seam.
+  let nx = 0 - dy / len * (rad + 0.5)
+  let ny = dx / len * (rad + 0.5)
+  fill_triangle(round(x0 + nx), round(y0 + ny), round(x0 - nx), round(y0 - ny), round(x1 + nx), round(y1 + ny), c)
+  fill_triangle(round(x0 - nx), round(y0 - ny), round(x1 - nx), round(y1 - ny), round(x1 + nx), round(y1 + ny), c)
+  if flat_b == 0 then
+    fill_circle(round(x1), round(y1), round(rad), c)
   end
 end
 
-----------------------------------------------------------------------
--- Entry point. RGB565, white face on a black background:
---   0x0000 = black background, 0xFFFF = white body, 0x0000 = black eyes.
--- Eye geometry/motion lives in C++ (aora rings); this draws body + eyes.
-----------------------------------------------------------------------
 fn draw()
-  let paper = 0x0000
-  let body = 0xFFFF
-  let eyes = 0x0000
-
-  let talk = clamp(mouth_open, 0, 1)
-  let sx = 1 + talk * 0.04
-  let sy = 1 - talk * 0.14
-
-  -- Aora-style life: joy states hop, angry trembles, everyone breathes.
-  let hop = 0
-  if expr == HAPPY then
-    let hp = (now_ms / 35) % 40
-    if hp > 20 then
-      hp = 40 - hp
-    end
-    hop = 0 - hp / 20 * sz(2.6)
-  elif expr == EXCITED then
-    let he = (now_ms / 26) % 40
-    if he > 20 then
-      he = 40 - he
-    end
-    hop = 0 - he / 20 * sz(2)
-  end
-  let bx = 0
-  if expr == ANGRY then
-    bx = (floor(now_ms / 70) % 2 * 2 - 1) * sz(1.1)
-  end
-  let breath_step = 85
-  let breath_amp = 0.012
-  if expr == SLEEPY then
-    breath_step = 115
-    breath_amp = 0.018
-  end
-  let bre = (now_ms / breath_step) % 40
-  if bre > 20 then
-    bre = 40 - bre
-  end
-  let breath = 1 + (bre - 10) / 10 * breath_amp
-
-  fill_rect(0, 0, canvas_w, canvas_h, paper)
+  fill_rect(0, 0, canvas_w, canvas_h, background)
   begin_group(0, 0, canvas_w, canvas_h)
-
-  let cx = tx(160) + bx
-  let cy = ty(120) + hop
-  let b = clamp(expr_blend, 0, 1)
-  let hb = clamp(expr_hold_blend, 0, 1)
-  let hb2 = clamp(expr_hold2_blend, 0, 1)
-  let body_scale_mix = 0
-  let mix_i = 0
-  while mix_i < 4 do
-    let e = expr_from
-    let w = (1 - hb2) * (1 - hb) * (1 - b)
-    if mix_i == 1 then
-      e = expr_hold2_to
-      w = hb2 * (1 - hb) * (1 - b)
-    elif mix_i == 2 then
-      e = expr_hold_to
-      w = hb * (1 - b)
-    elif mix_i == 3 then
-      e = expr
-      w = b
-    end
-    let s = 1
-    if e == EXCITED then
-      s = 1.06
-    elif e == SURPRISED then
-      s = 1.05
-    elif e == HAPPY then
-      s = 1.03
-    elif e == LISTENING then
-      s = 1.01
-    elif e == CURIOUS then
-      s = 1.02
-    elif e == CONFUSED then
-      s = 0.995
-    elif e == SLEEPY then
-      s = 0.97
-    elif e == SAD then
-      s = 0.98
-    elif e == THINKING then
-      s = 0.99
-    elif e == DIZZY then
-      s = 1.02
-    elif e == AFFECTION then
-      s = 1.01
-    elif e == BORED then
-      s = 0.985
-    end
-    body_scale_mix = body_scale_mix + s * w
-    mix_i = mix_i + 1
-  end
-  let base_r = sz(100) * body_scale_mix * breath
-
-  if talk > 0.05 then
-    fill_ellipse(cx, cy, base_r * sx, base_r * sy, body)
-  else
-    fill_circle(cx, cy, base_r, body)
-  end
-
-  -- Sleeping zzz trail floating up past the top-right edge (aora emotion 00 睡眠, "sleep").
-  if expr == SLEEPY then
-    let zi = 0
-    while zi < 3 do
-      let zc = ((now_ms + zi * 900) / 70) % 40
-      let zr = zc / 40 * sz(12)
-      let zx = tx(244 + zi * 14)
-      let zy = ty(58 - zi * 16) - zr
-      let zs = sz(7 + zi * 2)
-      draw_z(zx, zy, zs, body)
-      zi = zi + 1
-    end
-  end
-
-  -- Petting = aora emotion 14 害羞 ("shy"): blush riding just below each eye. The eyes dart
-  -- around while shy (look-away sweep + ring pool swaps), so the blush
-  -- centres are sampled live from the ring coordinates (4-point centroid)
-  -- instead of fixed positions. Plus a little heart floating up beside the
-  -- head.
-  if expr == AFFECTION then
-    if b > 0.6 then
-      let blx = (ring_l0x + ring_l12x + ring_l24x + ring_l36x) / 4
-      let bly = (ring_l0y + ring_l12y + ring_l24y + ring_l36y) / 4
-      let brx = (ring_r0x + ring_r12x + ring_r24x + ring_r36x) / 4
-      let bry = (ring_r0y + ring_r12y + ring_r24y + ring_r36y) / 4
-      fill_ellipse(blx, bly + sz(24), sz(11), sz(6), 0xFD15)
-      fill_ellipse(brx, bry + sz(24), sz(11), sz(6), 0xFD15)
-      let hc = (now_ms / 60) % 40
-      let hyy = ty(52) - hc / 40 * sz(16)
-      draw_heart(tx(243), hyy, sz(6 + 2 * (hc / 40)), body)
-    end
-  end
-
-  ring_eyes(eyes)
+  seg(seg0_ax, seg0_ay, seg0_bx, seg0_by, seg0_r, seg0_col)
+  seg(seg1_ax, seg1_ay, seg1_bx, seg1_by, seg1_r, seg1_col)
+  seg(seg2_ax, seg2_ay, seg2_bx, seg2_by, seg2_r, seg2_col)
+  seg(seg3_ax, seg3_ay, seg3_bx, seg3_by, seg3_r, seg3_col)
+  seg(seg4_ax, seg4_ay, seg4_bx, seg4_by, seg4_r, seg4_col)
+  seg(seg5_ax, seg5_ay, seg5_bx, seg5_by, seg5_r, seg5_col)
+  seg(seg6_ax, seg6_ay, seg6_bx, seg6_by, seg6_r, seg6_col)
+  seg(seg7_ax, seg7_ay, seg7_bx, seg7_by, seg7_r, seg7_col)
+  seg(seg8_ax, seg8_ay, seg8_bx, seg8_by, seg8_r, seg8_col)
+  seg(seg9_ax, seg9_ay, seg9_bx, seg9_by, seg9_r, seg9_col)
+  seg(seg10_ax, seg10_ay, seg10_bx, seg10_by, seg10_r, seg10_col)
+  seg(seg11_ax, seg11_ay, seg11_bx, seg11_by, seg11_r, seg11_col)
+  seg(seg12_ax, seg12_ay, seg12_bx, seg12_by, seg12_r, seg12_col)
+  seg(seg13_ax, seg13_ay, seg13_bx, seg13_by, seg13_r, seg13_col)
+  seg(seg14_ax, seg14_ay, seg14_bx, seg14_by, seg14_r, seg14_col)
+  seg(seg15_ax, seg15_ay, seg15_bx, seg15_by, seg15_r, seg15_col)
+  seg(seg16_ax, seg16_ay, seg16_bx, seg16_by, seg16_r, seg16_col)
+  seg(seg17_ax, seg17_ay, seg17_bx, seg17_by, seg17_r, seg17_col)
+  seg(seg18_ax, seg18_ay, seg18_bx, seg18_by, seg18_r, seg18_col)
+  seg(seg19_ax, seg19_ay, seg19_bx, seg19_by, seg19_r, seg19_col)
+  seg(seg20_ax, seg20_ay, seg20_bx, seg20_by, seg20_r, seg20_col)
+  seg(seg21_ax, seg21_ay, seg21_bx, seg21_by, seg21_r, seg21_col)
+  seg(seg22_ax, seg22_ay, seg22_bx, seg22_by, seg22_r, seg22_col)
+  seg(seg23_ax, seg23_ay, seg23_bx, seg23_by, seg23_r, seg23_col)
+  seg(seg24_ax, seg24_ay, seg24_bx, seg24_by, seg24_r, seg24_col)
+  seg(seg25_ax, seg25_ay, seg25_bx, seg25_by, seg25_r, seg25_col)
+  seg(seg26_ax, seg26_ay, seg26_bx, seg26_by, seg26_r, seg26_col)
+  seg(seg27_ax, seg27_ay, seg27_bx, seg27_by, seg27_r, seg27_col)
   end_group()
 end

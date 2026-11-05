@@ -213,13 +213,14 @@ end_group()
 | `eye_open` | float | 0..1 | まばたき (0 = 閉) |
 | `gaze_h`, `gaze_v` | float | -1..+1 | 視線サッカード |
 | `mouth_open` | float | 0..1 | 口の開き |
-| `expr` | enum | 0..5 | 表情 (下記定数で名前指定可)。遷移中は **行き先** |
-| `expr_from` | enum | 0..5 | 表情遷移の **出発点**。アイドル時は `expr` と同じ |
+| `expr` | enum | 0..19 | 表情 (下記定数で名前指定可)。遷移中は **行き先** |
+| `expr_from` | enum | 0..19 | 表情遷移の **出発点**。アイドル時は `expr` と同じ |
 | `expr_blend` | float | 0..1 | 表情遷移の緩動進度。0 = 完全に from ポーズ、1 = 完全に `expr` |
-| `expr_hold_to` | enum | 0..5 | 中断された遷移の行き先。アイドル時は `expr_from` と同じ |
+| `expr_hold_to` | enum | 0..19 | 中断された遷移の行き先。アイドル時は `expr_from` と同じ |
 | `expr_hold_blend` | float | 0..1 | 中断ポーズの混合比。from ポーズ = lerp(`expr_from`, `expr_hold_to`, `expr_hold_blend`) |
-| `primary` | u16 → float | RGB565 | 前景色 (デフォルト 白 `0xFFFF`) |
-| `background` | u16 → float | RGB565 | 背景色 (デフォルト 黒 `0x0000`) |
+| `expr_hold2_to`, `expr_hold2_blend` | enum / float | 0..19 / 0..1 | 2 段目の中断ポーズ (二重割り込み時のみ有効) |
+| `primary` | u16 → float | RGB565 | 前景色 (デフォルト グレー `0x73AE` = #777777) |
+| `background` | u16 → float | RGB565 | 背景色 (デフォルト `0x1082` = #121212) |
 | `secondary` | u16 → float | RGB565 | 予約色 (デフォルト 黄 `0xFFE0`) |
 | `balloon_fg`, `balloon_bg` | u16 → float | RGB565 | バルーン色 |
 | `eye_radius` | float | 1..20 | 目の半径 (FaceTuning) |
@@ -240,6 +241,18 @@ end_group()
 | `ANGRY` | 3 |
 | `DOUBT` | 4 |
 | `SLEEPY` | 5 |
+| `LISTENING` / `THINKING` / `EXCITED` / `CURIOUS` / `CONFUSED` | 6 / 7 / 8 / 9 / 10 |
+| `SURPRISED` / `DIZZY` / `AFFECTION` / `BORED` | 11 / 12 / 13 / 14 |
+| `WORKING` / `WAITING` / `BLOCKED` / `DONE` / `FAILED` | 15 / 16 / 17 / 18 / 19 (Grok Bot の実行状態) |
+
+### 顔パラメータ窓 (`seg0_ax` .. `seg27_col`)
+
+ID `0x25` から 168 個の float。`main/pill_face.hpp` が毎フレーム書き込む
+カプセル線分のディスプレイ リスト (28 本 × `ax, ay, bx, by, r, col`、320×240
+設計座標)。`col` の下位 16 bit は RGB565、`+65536` で A 端、`+131072` で B 端の
+円を省略する (両方で矩形)。`r == 0` はスキップ。既定の顔
+[`assets/grok_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/grok_face.avdsl)
+はこの窓をラスタライズするだけで、形とタイミングはすべて C++ 側にある。
 
 ---
 
@@ -444,7 +457,8 @@ end
 | 0x08 | `mouth_open` | 0x12 | `brow_off_x` | 0x1C | `cheek_radius` |
 | 0x09 | `expr` | 0x13 | `brow_off_y` | 0x1D | `cheek_off_x` |
 | 0x1E | `cheek_off_y` | 0x1F | `expr_from` | 0x20 | `expr_blend` |
-| 0x21 | `expr_hold_to` | 0x22 | `expr_hold_blend` | | |
+| 0x21 | `expr_hold_to` | 0x22 | `expr_hold_blend` | 0x23 | `expr_hold2_to` |
+| 0x24 | `expr_hold2_blend` | 0x25.. | `seg0_ax` .. `seg27_col` (顔パラメータ窓) | | |
 
 > 真実源: [components/avatar_vm/include/avatar_vm/opcodes.hpp](https://github.com/JosssphZhou/groki-bot/blob/main/components/avatar_vm/include/avatar_vm/opcodes.hpp)
 > (C++ 側) / [tools/avatar_dsl/opcodes.js](https://github.com/JosssphZhou/groki-bot/blob/main/tools/avatar_dsl/opcodes.js) (JS 側 ミラー)
@@ -489,9 +503,9 @@ end
 | 4. 実機書込み | `curl -X POST --data-binary @face.avbc http://stackchan-XXXXXX.local/api/avatar-dsl` | 即時適用 + NVS 保存 |
 | 5. 戻し | `curl -X POST http://stackchan-XXXXXX.local/api/avatar-dsl/reset` | embedded default に復帰 |
 
-ファーム ビルドに**ビルト イン**したい場合は
-[`assets/default_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/default_face.avdsl)
-を書き換えて `make build BOARD=<board>` するだけ。CMake が `node cli.mjs` を
+ファーム ビルドに**ビルト イン**される顔は
+[`assets/grok_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/grok_face.avdsl)
+で、書き換えて `make build BOARD=<board>` するだけ。CMake が `node cli.mjs` を
 呼んで `default_face.avbc` を生成 → `EMBED_FILES` でファームに埋込む。
 
 ---
@@ -513,7 +527,7 @@ end
 - ソース: <https://github.com/JosssphZhou/groki-bot>
 - DSL コンパイラ (JS): [`tools/avatar_dsl/`](https://github.com/JosssphZhou/groki-bot/tree/main/tools/avatar_dsl)
 - VM (C++): [`components/avatar_vm/`](https://github.com/JosssphZhou/groki-bot/tree/main/components/avatar_vm)
-- デフォルト顔: [`assets/default_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/default_face.avdsl)
+- デフォルト顔: [`assets/grok_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/grok_face.avdsl) (ジオメトリは [`main/pill_face.hpp`](https://github.com/JosssphZhou/groki-bot/blob/main/main/pill_face.hpp))
 - ブラウザ プレビュー: <https://josssphzhou.github.io/groki-bot/avatar.html>
 - Web フラッシャ: <https://josssphzhou.github.io/groki-bot/>
 - 設定ページ: <https://josssphzhou.github.io/groki-bot/settings.html>

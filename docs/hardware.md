@@ -46,8 +46,8 @@ The board is detected at boot and reported through `set_board_kind()` to the UI 
 | Framework / language | ESP-IDF 5.5 (verified on 5.5.4; 5.4.2 also compiles) / C++20 |
 | Target chip | `esp32s3` |
 | Face rendering | M5GFX. Full-screen buffer when PSRAM is present; 17 ms budget per frame; full-screen overlays yield the CPU every 33 ms |
-| Expressions | 15: Neutral, Happy, Sad, Angry, Doubt, Sleepy, Listening, Thinking, Excited, Curious, Confused, Surprised, Dizzy, Affection, Bored |
-| Eye-ring compositing | 48-point contour per eye, blended point by point with four weight sets (`expression`, `expression_from` and two hold layers); ring pool rotates about every 340 ms; blink, one-eye wink and openness squash vertically around the centroid after blending |
+| Expressions | 20: Neutral, Happy, Sad, Angry, Doubt, Sleepy, Listening, Thinking, Excited, Curious, Confused, Surprised, Dizzy, Affection, Bored, plus the Grok Bot run states Working, Waiting, Blocked, Done, Failed |
+| Pill face compositing | `main/pill_face.hpp` replays the design keyframes (CSS cubic-bezier easing, nested transforms) and writes up to 28 capsule segments per frame; poses blend with four weight sets (`expression`, `expression_from` and two hold layers) over 300 ms; at most 45 draw primitives per frame |
 | Avatar DSL | `.avdsl` source compiled to `.avbc` bytecode, hot-swappable over BLE or Wi-Fi. The default face is `assets/grok_face.avdsl` |
 | Lip sync | 16 kHz mono, 256-point radix-2 FFT; speech-band log energy plus spectral flux; EWMA noise floor follows the environment |
 | Servo motion | Trapezoidal velocity `PathGenerator`, torque on only while moving; limits stored in NVS |

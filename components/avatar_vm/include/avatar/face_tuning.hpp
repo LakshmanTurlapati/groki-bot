@@ -32,8 +32,9 @@ struct FaceTuning {
     bool cheeks_visible = false;
     float cheek_radius = 10.0f;
     float cheek_off_x = 0.0f, cheek_off_y = 0.0f;
-    std::uint16_t face_color = 0xFFFFu;      // RGB565 → Palette::primary
-    std::uint16_t bg_color = 0x0000u;        // RGB565 → Palette::background
+    // Grok Bot design ink: grey #777777 body on #121212 ground.
+    std::uint16_t face_color = 0x73AEu;      // RGB565 → Palette::primary
+    std::uint16_t bg_color = 0x1082u;        // RGB565 → Palette::background
 };
 
 } // namespace stackchan::avatar

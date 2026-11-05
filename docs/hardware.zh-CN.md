@@ -46,8 +46,8 @@ Takao Base 使用同一份 `cores3` 固件：舵机走 Port A（TX GPIO 2 / RX G
 | 框架 / 语言 | ESP-IDF 5.5（按 5.5.4 验证，5.4.2 也可编译）/ C++20 |
 | 目标芯片 | `esp32s3` |
 | 表情渲染 | M5GFX。有 PSRAM 时全屏缓冲；单帧绘制预算 17 ms，全屏覆盖层按 33 ms 周期让出 CPU |
-| 表情 | 15 种：Neutral、Happy、Sad、Angry、Doubt、Sleepy、Listening、Thinking、Excited、Curious、Confused、Surprised、Dizzy、Affection、Bored |
-| 眼环合成 | 每眼 48 点轮廓，按 `expression` / `expression_from` / 两层 hold 共四组权重逐点混合；环池轮换约 340 ms；眨眼、单眼 wink、开合度在混合后绕质心纵向压扁 |
+| 表情 | 20 种：Neutral、Happy、Sad、Angry、Doubt、Sleepy、Listening、Thinking、Excited、Curious、Confused、Surprised、Dizzy、Affection、Bored，以及 Grok Bot 运行状态 Working、Waiting、Blocked、Done、Failed |
+| 胶囊表情合成 | `main/pill_face.hpp` 回放设计稿的关键帧（CSS cubic-bezier 缓动、嵌套变换），每帧最多输出 28 个胶囊线段；按 `expression` / `expression_from` / 两层 hold 共四组权重在 300 ms 内混合；每帧最多 45 个绘制图元 |
 | Avatar DSL | `.avdsl` 源编译为 `.avbc` 字节码，经 BLE / Wi-Fi 热更换。出厂默认脸为 `assets/grok_face.avdsl` |
 | 口型同步 | 16 kHz 单声道，256 点 radix-2 FFT；语音带 log 能量加 spectral flux；EWMA 噪声地板跟随环境 |
 | 舵机运动 | 梯形速度曲线 `PathGenerator`，仅在驱动时使能扭矩；限位写入 NVS |

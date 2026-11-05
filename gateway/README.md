@@ -10,7 +10,7 @@ the firmware and Grok Bot is described in
 
 - **Voice conversation** through Google Gemini Live by default, or Grok login voice, with the robot's
   microphone and speaker.
-- **"Hi Grok" wake word**, detected on your computer, so the gateway only
+- **"Hey Grok" wake word**, detected on your computer, so the gateway only
   forwards microphone audio to the selected voice backend after you call the robot.
 - **An MCP server** so Claude Code, Claude Desktop, or any other MCP client
   can make the robot speak and read its status.
@@ -35,7 +35,7 @@ The Groki Bot firmware can already talk on its own: flash it, enter your own
 OpenAI or Gemini API key in its settings page, and it works without any
 computer. Install this gateway if you want:
 
-- the "Hi Grok" wake word,
+- the "Hey Grok" wake word,
 - the head to follow your face (Mac with a camera),
 - Claude (or another MCP client) to make the robot speak,
 - voice commands that reach your computer (Mac control, `ask_claude`).
@@ -163,12 +163,14 @@ uv run --all-extras python scripts/kws_offline_repro.py --generate-say
 
 ### Changing the wake word
 
-The default wake word is "Hi Grok". The detector (sherpa-onnx keyword
+The default wake word is "Hey Grok". The detector (sherpa-onnx keyword
 spotting) matches a sequence of sounds, so any phrase works without
 retraining the model. Set it in `.env` and restart the gateway:
 
+- "Hi Grok" (the earlier default): `STACKCHAN_WAKE_PHRASE=hi grok` (built in,
+  with the same vowel variants as "Hey Grok").
 - "Hey Groki" instead: `STACKCHAN_WAKE_PHRASE=hey groki` (built in, with the
-  same vowel variants as "Hi Grok").
+  same vowel variants as "Hey Grok").
 - Your own phrase: set `STACKCHAN_WAKE_PHRASE` to the phrase and
   `STACKCHAN_WAKE_KEYWORD` to its sounds, then `@` and the phrase. English
   words use CMU dictionary phonemes (ARPAbet, with stress digits); Chinese
@@ -188,6 +190,35 @@ same settings (`--voice` picks another macOS voice, `--wav` uses your own
 recording). Two or three syllables with clear consonants work best; if it
 triggers too rarely or too often, adjust `STACKCHAN_KWS_THRESHOLD` and
 `STACKCHAN_KWS_SCORE`.
+
+### Ending a conversation
+
+A conversation starts with the wake word, with `/say`, or when the robot
+announces a Grok Bot desktop result. The LEDs flash bright white with a short
+beep, then stay dim white while the robot listens and turn blue while it
+speaks. While the conversation is open, the robot keeps listening between
+replies. It ends, and the LEDs go off, when:
+
+- you say goodbye ("bye Grok", "stop listening", "that's all", "go to sleep");
+  the model says a short goodbye and calls its end tool;
+- a local program asks for it:
+  `curl -s -X POST http://127.0.0.1:8766/conversation/end` (loopback only,
+  like `/say`; answers `{"ok": true, "was_listening": ...}`, or 409 without a
+  voice session);
+- nobody speaks for `STACKCHAN_CONVERSATION_IDLE_S` (8 s) after a reply, or
+  the window reaches `STACKCHAN_WAKE_MAX_LISTENING_S` (45 s) after the robot's
+  last reply.
+
+To keep talking until you say goodbye, with a five-minute safety limit:
+
+```bash
+STACKCHAN_CONVERSATION_IDLE_S=300
+STACKCHAN_WAKE_MAX_LISTENING_S=300
+STACKCHAN_WAKE_IDLE_S=300
+```
+
+The robot's microphone is off while it speaks, so it cannot be interrupted by
+voice; touch still stops it.
 
 ## 3. Start it and check
 
@@ -247,7 +278,7 @@ or Edge), tab "对话" (Conversation):
 4. "保存并重启" (Save and restart).
 
 `/debug/status` should now show `"device": {"connected": true, ...}`. Say
-"Hi Grok" and start talking (or "Hey Groki" if you set
+"Hey Grok" and start talking (or "Hey Groki" if you set
 `STACKCHAN_WAKE_PHRASE=hey groki`, see [Changing the wake word](#changing-the-wake-word)).
 
 ## USB voice (no Wi-Fi path to the gateway)
@@ -294,6 +325,11 @@ then ride the serial port that `STACKCHAN_USB_TRANSPORT` already uses for
    voice session and calls the same `speak_text` path as a live Gemini or
    Grok session. A robot that is already connected over Wi-Fi keeps that
    session; `/say` does not move it to USB.
+
+   After speaking, the robot chimes and listens for an answer without the wake
+   word, as if you had said "Hey Grok". Add `"listen": false` for a one-way
+   notice. A Grok Bot desktop result that the robot announces while idle opens
+   the same window. See [Ending a conversation](#ending-a-conversation).
 
 Limits:
 
@@ -426,7 +462,7 @@ tools/vision-tracker/.build/release/groki-vision-tracker --endpoint http://127.0
 
 The instructions below are the **optional CLI hand-off for Gemini voice**. Grok login voice uses native tools instead; see [Grok Bot login voice](#grok-bot-login-voice-macos). It does not run the port 18770 forwarding service.
 
-With this on, you can say "Hi Grok, look up tomorrow's weather in Tokyo" or
+With this on, you can say "Hey Grok, look up tomorrow's weather in Tokyo" or
 "research X for me": Gemini acknowledges the accepted task, hands the task to an agent in the Grok Bot app, and reads the
 agent's replies aloud as they come in. Small talk stays with Gemini. The full
 message flow is in [docs/architecture.md](../docs/architecture.md#4-grok-bot-hand-off).
@@ -481,11 +517,16 @@ reconnect the MCP client, after a change).
 | `STACKCHAN_KWS_SCORE` | `7` | Higher makes the wake word easier to trigger |
 | `STACKCHAN_KWS_THRESHOLD` | `0.05` | Lower makes the wake word more sensitive |
 | `STACKCHAN_KWS_MODEL_DIR` | `./models/kws` | Wake word model location |
-| `STACKCHAN_WAKE_PHRASE`, `STACKCHAN_WAKE_KEYWORD` | `hi grok` | Wake word; see [Changing the wake word](#changing-the-wake-word). `STACKCHAN_WAKE_PHRASE=hey groki` alone switches to "Hey Groki" |
+| `STACKCHAN_WAKE_PHRASE`, `STACKCHAN_WAKE_KEYWORD` | `hey grok` | Wake word; see [Changing the wake word](#changing-the-wake-word). `STACKCHAN_WAKE_PHRASE=hey groki` alone switches to "Hey Groki" |
 | `STACKCHAN_WAKE_IDLE_S` | `30` | Silence before the listening window closes |
+| `STACKCHAN_WAKE_MAX_LISTENING_S` | `45` | Longest window after the robot's last reply, even with room noise; `0` removes the cap |
+| `STACKCHAN_CONVERSATION_IDLE_S` | `8` | The voice backend ends the conversation this long after its reply when nobody speaks; `0` disables |
 | `STACKCHAN_MAC_CONTROL` | off | `1` lets voice commands control this Mac (see Safety) |
 | `STACKCHAN_FACE_TRACKER_SOURCE` | `robot` | CoreS3 camera; `mac` explicitly selects a webcam |
 | `STACKCHAN_CAMERA_FPS` | `4` | Robot capture rate ceiling, greater than zero and at most 8 Hz; effective rate includes servo settling |
+| `STACKCHAN_CAMERA_SPEAKING_FPS` | `2` | Capture rate ceiling while the robot talks; each capture briefly stalls the face renderer |
+| `STACKCHAN_TRACK_WHILE_SPEAKING` | `1` | Keep following a face during replies; set `0` if replies crackle, because the servos share a power rail with the speaker |
+| `STACKCHAN_USER_SPEECH_HANGOVER_S` | `0.8` | Tracking pauses while the user talks and resumes this long after their last word |
 | `STACKCHAN_CAMERA_USB_FORMAT` | `jpeg` | USB camera encoding; `rgb565be` retains uncompressed diagnostics |
 | `STACKCHAN_TRACKING_HFOV`, `STACKCHAN_TRACKING_VFOV` | `60`, `46.8` | Estimated horizontal/vertical lens angles in degrees; configurable after measured calibration |
 | `STACKCHAN_TRACKING_GAIN` | `0.9` | Angular correction gain, 0.1–1; reduced automatically near center |

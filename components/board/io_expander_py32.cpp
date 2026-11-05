@@ -19,6 +19,8 @@ constexpr std::uint8_t kRegGpioPullUpLow = 0x09;
 constexpr std::uint8_t kRegGpioPullUpHigh = 0x0A;
 constexpr std::uint8_t kRegGpioPullDownLow = 0x0B;
 constexpr std::uint8_t kRegGpioPullDownHigh = 0x0C;
+constexpr std::uint8_t kRegGpioDriveLow = 0x13;   // 1 = open-drain
+constexpr std::uint8_t kRegGpioDriveHigh = 0x14;
 // LED strip on the M5 base. The PY32 owns the NeoPixel timing — the host
 // just writes a count + RGB565 LE RAM and toggles the refresh bit.
 constexpr std::uint8_t kRegLedCfg = 0x24;          // [5:0]=count, [6]=refresh
@@ -62,6 +64,11 @@ tl::expected<void, Error> Py32Expander::set_pull_up(std::uint8_t pin, bool enabl
         return r;
     }
     return write_bit(kRegGpioPullUpLow, kRegGpioPullUpHigh, pin, enable);
+}
+
+tl::expected<void, Error> Py32Expander::set_open_drain(std::uint8_t pin, bool enable)
+{
+    return write_bit(kRegGpioDriveLow, kRegGpioDriveHigh, pin, enable);
 }
 
 tl::expected<void, Error> Py32Expander::digital_write(std::uint8_t pin, bool level)

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grok Bot Failed face</title>
+<style>
+body{margin:0;background:#121212}
+@keyframes sink{0%,78%{transform:translate(0,22px)}86%,100%{transform:translate(0,0)}}
+@keyframes droopL{0%,78%{transform:translate(4px,29px) rotate(39deg) scale(0.8)}86%,100%{transform:translate(0,0) rotate(0deg) scale(1)}}
+@keyframes droopR{0%,78%{transform:translate(-4.5px,29px) rotate(-17deg) scale(0.8)}86%,100%{transform:translate(0,0) rotate(0deg) scale(1)}}
+.pos{animation:sink 3.2s ease-in-out infinite}
+.eyeL{animation:droopL 3.2s ease-in-out infinite;transform-origin:50% 50%}
+.eyeR{animation:droopR 3.2s ease-in-out infinite;transform-origin:50% 50%}
+</style>
+<style>html,body{height:100%}body{display:grid;place-items:center;margin:0}</style>
+</head>
+<body>
+<div style="width: 320px; height: 240px; background: #121212; position: relative; overflow: hidden">
+<div class="pos" style="position: absolute; left: 61.5px; top: 52.5px; width: 197px; height: 135px">
+<div style="position: absolute; left: 0; top: 0; width: 197px; height: 135px; transform: rotate(-15deg)">
+<div style="position: absolute; left: 0; top: 0; width: 197px; height: 135px; border-radius: 67.5px; background: #777777; overflow: hidden">
+<div style="position: absolute; left: 86.5px; top: 13.5px; width: 90px; height: 70px">
+<div style="position: absolute; left: 9px; top: 11.5px; width: 20px; height: 47px; transform: rotate(-11deg)">
+<div class="eyeL" style="width: 20px; height: 47px; border-radius: 10px; background: #121212"></div>
+</div>
+<div style="position: absolute; left: 61.5px; top: 11.5px; width: 20px; height: 47px; transform: rotate(-11deg)">
+<div class="eyeR" style="width: 20px; height: 47px; border-radius: 10px; background: #121212"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>

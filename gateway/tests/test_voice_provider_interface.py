@@ -117,7 +117,7 @@ async def test_model_warmup_does_not_delay_voice_start_or_replay_early_microphon
         codec_factory=lambda: codec, wake_gate_factory=factory,
         wake_confirm_hold_s=0,
     )
-    proxy._signal_wake_chime = lambda: None
+    proxy._signal_wake_chime = lambda *_: None
     try:
         assert await asyncio.wait_for(proxy.start(SimpleNamespace(device_id="fixture"), {}, AsyncMock()), 0.5)
         await asyncio.wait_for(entered.wait(), 1)

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "avatar/expression.hpp"
+#include "avatar/expression_names.hpp"
 #include "head_control.hpp"
 
 namespace stackchan::app {
@@ -90,6 +91,11 @@ public:
         //   [22:15] expression (u8)
         //   [14:0]  hold_ms, capped at kOverlayHoldCapMs (0 = sticky)
         std::atomic<std::uint32_t> overlay_command{0};
+        // Grok Bot run state from the gateway (thinking / working / waiting /
+        // blocked / done / failed). Same one-word layout as overlay_command,
+        // except the low 15 bits hold the TTL in 100 ms units (0 = the
+        // per-state default). See pack_activity_command.
+        std::atomic<std::uint32_t> activity_command{0};
         // Bumped on touch / wake / message so idle decay snaps back.
         std::atomic<std::uint32_t> activity_seq{0};
         // External gaze target (Avatar::set_gaze inputs). Updated by the
@@ -206,6 +212,50 @@ public:
 
     void note_face_activity() noexcept {
         face.activity_seq.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    static constexpr std::uint32_t kActivityTtlUnitMs = 100;
+
+    static constexpr std::uint32_t pack_activity_command(bool valid, std::uint8_t seq, std::uint8_t expression,
+                                                         std::uint32_t ttl_ms) noexcept {
+        std::uint32_t units = ttl_ms / kActivityTtlUnitMs + (ttl_ms % kActivityTtlUnitMs != 0 ? 1u : 0u);
+        if (units > kOverlayHoldCapMs) {
+            units = kOverlayHoldCapMs;
+        }
+        return (valid ? kOverlayValidBit : 0u) | (static_cast<std::uint32_t>(seq) << 23) |
+               (static_cast<std::uint32_t>(expression) << 15) | units;
+    }
+
+    // Publish the Grok Bot run state. The sequence makes a re-send of the
+    // same state (keepalive) visible to the render task, which refreshes
+    // the TTL.
+    void request_bot_activity(stackchan::avatar::Expression e, std::uint32_t ttl_ms) noexcept {
+        const auto seq = static_cast<std::uint8_t>(activity_seq_counter_.fetch_add(1, std::memory_order_relaxed) + 1);
+        face.activity_command.store(pack_activity_command(true, seq, static_cast<std::uint8_t>(e), ttl_ms),
+                                    std::memory_order_release);
+        face.activity_seq.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void clear_bot_activity() noexcept {
+        const auto seq = static_cast<std::uint8_t>(activity_seq_counter_.fetch_add(1, std::memory_order_relaxed) + 1);
+        face.activity_command.store(pack_activity_command(false, seq, 0, 0), std::memory_order_release);
+        face.activity_seq.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Name-based entry for the gateway `activity` message and /mcp/activity.
+    // "idle" / "neutral" (or empty) clear the run state; returns false for
+    // an unknown name and leaves the face alone.
+    bool request_bot_activity(std::string_view name, std::uint32_t ttl_ms) noexcept {
+        if (name.empty() || name == "idle" || name == "neutral") {
+            clear_bot_activity();
+            return true;
+        }
+        const auto e = stackchan::avatar::expression_from_name(name);
+        if (!e) {
+            return false;
+        }
+        request_bot_activity(*e, ttl_ms);
+        return true;
     }
 
     // --- Battery (demo_loop samples the INA226; UI + services read) --------
@@ -483,6 +533,8 @@ private:
     mutable std::mutex balloon_mutex_;
     // Incremented concurrently by publishers in several tasks; packed into overlay_command.
     std::atomic<std::uint8_t> overlay_seq_counter_{0};
+    // Same for activity_command.
+    std::atomic<std::uint8_t> activity_seq_counter_{0};
     std::string balloon_text_;
     std::uint32_t balloon_hold_ms_{0};
     BalloonCompletionCallback balloon_callback_{};

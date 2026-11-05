@@ -96,6 +96,10 @@ bool tracking_capture(std::vector<std::uint8_t>& out, std::size_t& w, std::size_
                       stackchan::wifi_config::CameraCaptureMetadata& metadata,
                       const std::function<bool(std::vector<std::uint8_t>&)>& transform = {}, bool motion = false) {
     const auto started = now_ms();
+    if (g_state->servo.sleeping()) {
+        metadata.tracking_sleeping = true;
+        return false;
+    }
     metadata.tracking_busy = true;
     std::unique_lock lock(g_camera_mutex, std::try_to_lock);
     if (!lock.owns_lock())

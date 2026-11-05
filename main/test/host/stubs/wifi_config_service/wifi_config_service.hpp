@@ -20,6 +20,7 @@ struct CameraCaptureOptions {
 struct CameraCaptureMetadata {
     std::string frame_id;
     bool tracking_busy = false;
+    bool tracking_sleeping = false;
     float capture_yaw = 0, capture_pitch = 0;
     std::uint32_t capture_ms = 0;
     bool motion_compensated = false;

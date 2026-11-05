@@ -394,6 +394,10 @@ void set_mcp_expression_sink(McpExpressionSink sink)
 {
     http::set_mcp_expression_sink(std::move(sink));
 }
+void set_mcp_activity_sink(McpActivitySink sink)
+{
+    http::set_mcp_activity_sink(std::move(sink));
+}
 void set_mcp_balloon_sink(McpBalloonSink sink)
 {
     http::set_mcp_balloon_sink(std::move(sink));

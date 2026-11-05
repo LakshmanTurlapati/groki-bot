@@ -396,9 +396,17 @@ export function createBridge({ port = 18771, rpc = accountRpc, agentId = process
       if (nativePresence) {
         if (presenceBusy) return send(409, {ok: false, error: 'presence_busy'});
         if (!activeCall && !body.isOnTheLine) return send(403, {ok: false, error: 'call_not_allowed'});
-        if (activeCall && body.callId !== activeCall.callId) return send(409, {ok: false, error: 'call_conflict'});
+        if (activeCall && body.callId !== activeCall.callId && !body.isOnTheLine) return send(409, {ok: false, error: 'call_conflict'});
         presenceBusy = true;
         try {
+        if (activeCall && body.callId !== activeCall.callId) {
+          // Only loopback clients reach this route, so a new call comes from a
+          // restarted gateway whose predecessor never hung up: retire the stale
+          // call instead of refusing every later one.
+          const stale = activeCall;
+          activeCall = null; for (const controller of streams) controller.abort();
+          await sandbox.presence({agentId: stale.agentId, callId: stale.callId, isOnTheLine: false, acceptsOverheard: stale.acceptsOverheard}).catch(() => {});
+        }
         const authId = await sandbox.callerAuthId();
         await sandbox.presence(body);
         if (body.isOnTheLine) {

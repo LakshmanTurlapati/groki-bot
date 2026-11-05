@@ -272,3 +272,27 @@ async def test_native_registration_failure_keeps_voice_start_running(monkeypatch
     assert b.running and not b._native.ready
     await b.stop()
     assert b._native._task.done()
+
+
+@pytest.mark.asyncio
+async def test_only_native_update_responses_are_reported_as_proactive():
+    seen = []
+    b = GbotVoiceBridge(
+        on_audio=AsyncMock(),
+        on_turn_complete=AsyncMock(),
+        on_interrupt=AsyncMock(),
+        on_session_dead=AsyncMock(),
+        on_proactive_response=lambda: seen.append("proactive"),
+    )
+    for trigger in ("server_vad", "response_create", None):
+        await b._handle_event({"type": "response.created", "response": {"id": str(trigger), "metadata": {"trigger": trigger}}})
+    assert seen == []
+    await b._handle_event({"type": "response.created", "response": {"id": "r", "metadata": {"trigger": "async_update"}}})
+    assert seen == ["proactive"]
+
+
+def test_conversation_idle_timeout_comes_from_env(monkeypatch):
+    monkeypatch.setenv("STACKCHAN_CONVERSATION_IDLE_S", "300")
+    assert bridge()._conversation_idle_timeout_s == 300.0
+    monkeypatch.delenv("STACKCHAN_CONVERSATION_IDLE_S")
+    assert bridge()._conversation_idle_timeout_s == 8.0

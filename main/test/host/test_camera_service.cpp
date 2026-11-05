@@ -86,6 +86,8 @@ int main(int argc, char** argv)
             hw.capture_hook = [&] { state.servo.set_target({0, 0}, 400, app::HeadSource::Manual, now()); };
         if (scenario == "tracking_paused")
             state.servo.set_tracking_mode(app::TrackingMode::Conversation);
+        if (scenario == "tracking_sleeping")
+            state.servo.set_sleeping(true);
         if (scenario == "tracking_failure")
             hw.fail_capture = true;
         if (scenario == "tracking_timeout") {
@@ -150,6 +152,10 @@ int main(int argc, char** argv)
             require(seq && request, "no-face release could not reach servo mailbox");
             state.servo.finish(*request, {}, true, true, now(), {-40, -10}, {40, 25});
             require(!state.servo.idle_paused(now()), "no-face result leaked capture reservation");
+        } else if (scenario == "tracking_sleeping") {
+            require(!captured && frame.metadata.tracking_sleeping, "sleeping robot did not refuse the capture");
+            require(!frame.metadata.tracking_busy, "sleep looked like a retryable busy camera");
+            require(hw.capture_calls == 0, "sleeping robot touched the camera");
         } else {
             require(!captured && frame.metadata.frame_id.empty(), "invalid tracking snapshot reported success");
             const bool unavailable = scenario == "tracking_failure" || scenario == "tracking_timeout" ||

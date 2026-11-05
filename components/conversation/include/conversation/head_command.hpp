@@ -8,7 +8,7 @@
 
 namespace stackchan::conversation {
 
-enum class HeadTrackingMode : unsigned char { Off, Tracking, Conversation };
+enum class HeadTrackingMode : unsigned char { Off, Tracking, Conversation, Engaged };
 struct HeadTrackingCommand {
     std::string frame_id;
     float delta_yaw = 0, delta_pitch = 0;

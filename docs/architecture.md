@@ -5,7 +5,7 @@ English · [中文](architecture.zh-CN.md)
 Groki Bot has three layers. Each one is optional on top of the one before it:
 
 1. **Firmware** on the robot (M5Stack CoreS3 with a Stack-chan base). On its own it talks to OpenAI Realtime or Gemini Live with your API key.
-2. **Gateway** on your computer ([gateway/](../gateway/README.md)). The robot sends its microphone audio to the gateway instead; the gateway runs Gemini Live with a "Hi Grok" wake word and exposes an MCP server for Claude and other MCP clients.
+2. **Gateway** on your computer ([gateway/](../gateway/README.md)). The robot sends its microphone audio to the gateway instead; the gateway runs Gemini Live with a "Hey Grok" wake word and exposes an MCP server for Claude and other MCP clients.
 3. **Grok Bot hand-off**. The gateway can pass tasks to an agent in the Grok Bot app through a small local forwarding service, and read the agent's replies aloud through the robot.
 
 ```mermaid
@@ -61,7 +61,7 @@ The same picture as text:
 
 | | Path 1: firmware only | Path 2: + gateway | Path 3: + Grok Bot |
 |---|---|---|---|
-| What you get | Voice conversation, face, head motion, touch | "Hi Grok" wake word, Gemini Live voice through your computer, Claude can make the robot speak and read its status | Say "look this up" or "research X"; the robot answers "sent to the agent" right away and reads the agent's replies aloud as they arrive |
+| What you get | Voice conversation, face, head motion, touch | "Hey Grok" wake word, Gemini Live voice through your computer, Claude can make the robot speak and read its status | Say "look this up" or "research X"; the robot answers "sent to the agent" right away and reads the agent's replies aloud as they arrive |
 | Hardware | CoreS3 + Stack-chan base (or another supported board), USB-C cable | Plus a computer on the same Wi-Fi (macOS tested; Linux for voice) | Same computer |
 | Software | Desktop Chrome or Edge for the web flasher and BLE settings page | [uv](https://docs.astral.sh/uv/), Git, libopus; optional wake word model (about 33 MB) | Grok Bot app, signed in; `gbot` CLI from [grok-bot-cli](https://github.com/ScriptedAlchemy/grok-bot-cli) (`npm install --global grok-bot-cli`; needs a recent Node.js) |
 | Keys | OpenAI or Gemini API key, stored in the robot's NVS | Gemini API key in `gateway/.env`; optional shared `STACKCHAN_TOKEN` | None extra: `gbot` uses the app session; nothing Grok-related is stored by the gateway |
@@ -89,7 +89,7 @@ A wrong token is rejected with HTTP 401 (`ESP32 auth rejected` in the gateway lo
 
 **Hello.** The robot sends `{"type": "hello", "features": {"mcp": false}, "audio_params": {"format": "opus", "sample_rate": 16000, "channels": 1, "frame_duration": 60}}`. The gateway answers with its own hello and a 24 kHz downlink format. `features.mcp=false` tells the gateway that this firmware does not accept MCP tool calls from the server, so face, LED, head and camera MCP tools from the gateway do not reach the Groki Bot firmware. Voice works fully. Face tracking does not use MCP (see below).
 
-**Audio.** Uplink: Opus, 16 kHz mono, 60 ms frames, as binary WebSocket messages. On the gateway the wake word detector (sherpa-onnx, runs locally) listens first; only after "Hi Grok" (or "Hey Groki" with `STACKCHAN_WAKE_PHRASE=hey groki`) is audio forwarded to Gemini, and the listening window closes after `STACKCHAN_WAKE_IDLE_S` seconds of silence. Downlink: Gemini's reply audio is encoded to Opus (24 kHz, 60 ms) and sent back with `tts` state messages so the robot knows when speech starts and stops.
+**Audio.** Uplink: Opus, 16 kHz mono, 60 ms frames, as binary WebSocket messages. On the gateway the wake word detector (sherpa-onnx, runs locally) listens first; only after "Hey Grok" (or "Hey Groki" with `STACKCHAN_WAKE_PHRASE=hey groki`) is audio forwarded to Gemini, and the listening window stays open between replies until the user says goodbye, a local program calls `POST /conversation/end`, or nobody speaks for `STACKCHAN_CONVERSATION_IDLE_S` seconds after a reply (`STACKCHAN_WAKE_IDLE_S` and `STACKCHAN_WAKE_MAX_LISTENING_S` also bound it). After `/say` or an announced Grok Bot result the window opens without the wake word. Downlink: Gemini's reply audio is encoded to Opus (24 kHz, 60 ms) and sent back with `tts` state messages so the robot knows when speech starts and stops.
 
 **USB voice.** The same Opus frames and the same JSON events (`hello`, `listen`, `tts`, `llm`, `led`, `head`) can ride the USB Serial/JTAG console instead of the WebSocket. `$MCP:` lines stay newline-delimited tool calls. Audio and voice JSON use a length-prefixed frame (`0xFF 0xFE`, version, type, length, payload, CRC-16/CCITT-FALSE) so a payload may contain newlines. The host signals `voice/mode` on a `$MCP:` line. The firmware switches the XiaoZhi client onto that link and falls back to the Wi-Fi WebSocket when the host clears the mode or the cable drops. The gateway builds the same per-connection voice proxy it builds for a WebSocket hello. `POST /say` on `127.0.0.1:8766` (loopback only) opens or reuses that session and speaks without the wake word.
 
@@ -108,7 +108,8 @@ USB voice uses a ten-second firmware lease. The gateway renews it with `voice/pi
 | `POST /capture` | Photo upload from firmware that has a camera tool (needs `Authorization: Bearer` with `VISION_TOKEN` or `STACKCHAN_TOKEN`). Not used by the Groki Bot firmware. |
 | `POST /debug/inject-text` | Inject a text turn into the live session, token protected |
 | `POST /track` | Face positions in explicit `STACKCHAN_FACE_TRACKER_SOURCE=mac` mode; robot mode returns 409 |
-| `POST /say` | Loopback only. Speak `text` through the live voice session (opens a USB session when that is the link) without the wake word |
+| `POST /say` | Loopback only. Speak `text` through the live voice session (opens a USB session when that is the link) without the wake word, then listen for an answer; `"listen": false` keeps it one-way |
+| `POST /conversation/end` | Loopback only. Close the listening window; the next conversation needs the wake word |
 
 **Face tracking.** The gateway captures 320×240 frames from the CoreS3, using
 quality-80 JPEG over USB or RGB565BE over HTTP, and feeds them to a local
@@ -127,9 +128,9 @@ The robot-camera protocol uses these additional interfaces:
 
 | Interface | Contract |
 |---|---|
-| Device hello | `features.camera_tracking_v1=true` when tracking is available; `camera_tracking_v2=true` adds motion-aware USB captures and binary camera chunks |
-| Device HTTP capture | `GET /api/camera/capture?tracking=1`, existing settings Basic Auth, 320×240 `rgb565be`, 153,600 bytes, opaque `X-Frame-Id`; 409 for paused/moving/busy, 503 for capture or feedback failure |
-| Gateway → device mode | `{"type":"head_tracking","mode":"tracking"}`; `conversation` invalidates pending frames and freezes automatic idle/tracking motion; `off` restores ordinary idle behavior |
+| Device hello | `features.camera_tracking_v1=true` when tracking is available; `camera_tracking_v2=true` adds motion-aware USB captures and binary camera chunks; `camera_tracking_engaged_v1=true` accepts mode `engaged` |
+| Device HTTP capture | `GET /api/camera/capture?tracking=1`, existing settings Basic Auth, 320×240 `rgb565be`, 153,600 bytes, opaque `X-Frame-Id`; 409 for paused/moving/busy, 423 while the robot is asleep, 503 for capture or feedback failure |
+| Gateway → device mode | `{"type":"head_tracking","mode":"tracking"}`; `engaged` keeps tracking through a conversation, including replies, with idle motion paused; `conversation` invalidates pending frames and freezes automatic idle/tracking motion while the user talks; `off` restores ordinary idle behavior |
 | Gateway → device correction | `{"type":"head_track","frame_id":"…","delta_yaw":2,"delta_pitch":1}`; at most one correction per token, bounded to ±15° yaw/±10° pitch and configured servo limits |
 | Gateway → device no-face release | `{"type":"head_track","frame_id":"…","release":true}`; releases the reservation without moving |
 
@@ -177,7 +178,7 @@ sequenceDiagram
     participant P as Forwarding service :18770
     participant B as gbot CLI + Grok Bot app
 
-    U->>R: "Hi Grok, research X for me"
+    U->>R: "Hey Grok, research X for me"
     R->>G: Opus audio (ws :8765)
     G->>G: Gemini calls ask_grokbot(task)
     G-->>R: Gemini says "Sent to assistant."

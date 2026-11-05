@@ -16,6 +16,11 @@ struct I2c {
     bool write(const std::uint8_t* data, std::size_t size) const;
     bool read(std::uint8_t* result, std::size_t size, bool last_nack) const;
     bool stop() const;
+    // Register helpers used by the PY32 expander.
+    std::uint8_t readRegister8(std::uint8_t address, std::uint8_t reg, std::uint32_t frequency) const;
+    bool writeRegister8(std::uint8_t address, std::uint8_t reg, std::uint8_t value, std::uint32_t frequency) const;
+    bool writeRegister(std::uint8_t address, std::uint8_t reg, const std::uint8_t* data, std::size_t length,
+                       std::uint32_t frequency) const;
 };
 inline I2c In_I2C;
 } // namespace m5

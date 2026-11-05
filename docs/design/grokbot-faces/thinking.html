@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grok Bot Thinking face</title>
+<style>
+body{margin:0;background:#121212}
+@keyframes pulse{0%,100%{transform:translateY(0) scale(0.8);opacity:0.5}46%{transform:translateY(-10.5px) scale(1);opacity:1}}
+.p{animation:pulse 1.4s ease-in-out infinite;transform-origin:50% 50%}
+.right{animation-delay:-0.444s}
+.left{animation-delay:0.156s}
+.mid{animation-delay:0.556s}
+</style>
+<style>html,body{height:100%}body{display:grid;place-items:center;margin:0}</style>
+</head>
+<body>
+<div style="width: 320px; height: 240px; background: #121212; position: relative; overflow: hidden">
+<div class="p left" style="position: absolute; left: 58px; top: 92px; width: 56px; height: 56px; border-radius: 50%; background: #777777"></div>
+<div class="p mid" style="position: absolute; left: 132px; top: 101px; width: 56px; height: 38px">
+<div style="width: 56px; height: 38px; border-radius: 19px; background: #777777; transform: rotate(-15deg)"></div>
+</div>
+<div class="p right" style="position: absolute; left: 206px; top: 92px; width: 56px; height: 56px; border-radius: 50%; background: #777777"></div>
+</div>
+</body>
+</html>

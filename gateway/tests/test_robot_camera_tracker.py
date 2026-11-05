@@ -14,6 +14,7 @@ from stackchan_mcp.robot_camera_tracker import (
     FRAME_BYTES, CameraBusy, CameraError, RobotCameraConfig, RobotCameraTracker,
     SwiftFrameDetector, camera_capture_url, capture_frame, parse_detection,
 )
+from stackchan_mcp.usb_transport import CameraSleeping
 
 FRAME = bytes(FRAME_BYTES)
 HEADERS = {
@@ -137,6 +138,16 @@ async def test_busy_is_distinct_from_camera_failure():
 
     async with camera_server(handler) as origin, aiohttp.ClientSession() as session:
         with pytest.raises(CameraBusy):
+            await capture_frame(session, camera_capture_url(origin), "")
+
+
+@pytest.mark.asyncio
+async def test_sleeping_is_distinct_from_busy():
+    async def handler(request):
+        return web.Response(status=423)
+
+    async with camera_server(handler) as origin, aiohttp.ClientSession() as session:
+        with pytest.raises(CameraSleeping):
             await capture_frame(session, camera_capture_url(origin), "")
 
 
@@ -293,6 +304,91 @@ async def test_invalidated_capture_failure_does_not_delay_recovery(monkeypatch):
     finally:
         release.set()
         await tracker.stop()
+
+
+def usb_tracker(capture, *, on_detection=None, **kwargs):
+    async def ignored(face, context):
+        pass
+
+    conn = connection()
+    conn.transport = "usb"
+    tracker = RobotCameraTracker(
+        SimpleNamespace(connection=conn, usb_transport=SimpleNamespace(capture_camera_frame=capture)),
+        on_detection=on_detection or ignored, tracking_allowed=lambda: True, **kwargs,
+    )
+    tracker._detector = FakeDetector(FACE)
+    return tracker
+
+
+@pytest.mark.asyncio
+async def test_sleeping_robot_is_polled_slowly_and_wakes_without_errors(monkeypatch):
+    monkeypatch.setenv("STACKCHAN_FACE_TRACKER_AUTOSTART", "1")
+    monkeypatch.setattr(RobotCameraTracker, "SLEEPING_POLL_S", 0.05)
+    calls = []
+    awake = asyncio.Event()
+
+    async def capture(**kwargs):
+        calls.append(time.monotonic())
+        if len(calls) < 3:
+            raise CameraSleeping("sleeping")
+        return "fresh-frame", FRAME
+
+    async def detected(face, context):
+        awake.set()
+
+    tracker = usb_tracker(capture, on_detection=detected, config=RobotCameraConfig(usb_encoding="rgb565be"))
+    tracker.start()
+    try:
+        await until(lambda: tracker.status()["camera_state"] == "sleeping")
+        await asyncio.wait_for(awake.wait(), 1)
+        assert calls[1] - calls[0] >= 0.04
+        assert tracker.status()["camera_errors"] == 0
+        assert tracker.status()["last_error"] is None
+    finally:
+        await tracker.stop()
+
+
+@pytest.mark.asyncio
+async def test_speaking_lowers_the_capture_rate(monkeypatch):
+    monkeypatch.setenv("STACKCHAN_FACE_TRACKER_AUTOSTART", "1")
+    calls = []
+
+    async def capture(**kwargs):
+        calls.append(time.monotonic())
+        return "fresh-frame", FRAME
+
+    tracker = usb_tracker(capture, is_speaking=lambda: True,
+                          config=RobotCameraConfig(usb_encoding="rgb565be", fps=8, speaking_fps=5))
+    tracker.start()
+    try:
+        await until(lambda: len(calls) >= 2)
+        assert calls[1] - calls[0] >= 0.18
+    finally:
+        await tracker.stop()
+
+
+@pytest.mark.asyncio
+async def test_speaking_slows_busy_retries(monkeypatch):
+    monkeypatch.setenv("STACKCHAN_FACE_TRACKER_AUTOSTART", "1")
+    monkeypatch.setattr(RobotCameraTracker, "SPEAKING_BUSY_RETRY_S", 0.1)
+    calls = []
+
+    async def capture(**kwargs):
+        calls.append(time.monotonic())
+        return "", b""
+
+    tracker = usb_tracker(capture, is_speaking=lambda: True, config=RobotCameraConfig(usb_encoding="rgb565be"))
+    tracker.start()
+    try:
+        await until(lambda: len(calls) >= 2)
+        assert calls[1] - calls[0] >= 0.09
+    finally:
+        await tracker.stop()
+
+
+def test_speaking_fps_is_validated():
+    with pytest.raises(ValueError, match="STACKCHAN_CAMERA_SPEAKING_FPS"):
+        RobotCameraConfig(speaking_fps=0)
 
 
 @pytest.mark.asyncio

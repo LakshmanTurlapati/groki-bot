@@ -35,19 +35,24 @@ public:
         // Stack-chan ネコミミ NeoPixel (18 LEDs = 9 per ear) — present on
         // M5/Takao/AtomNyan bases, but the data line varies: CoreS3 uses
         // GPIO9 (free pin near the M-BUS), AtomNyan uses GPIO38 (the
-        // available pin on Atomic ECHO BASE's headers). We prefer the
-        // nekomimi strip over the M5-base PY32 ring, whose rear NeoPixels are
-        // currently disabled entirely; the PY32
-        // path can come back via a separate accessor without disturbing
-        // this one. StopWatch (C152) has no nekomimi wiring at all — leave
-        // led_ as nullptr so app_main / led_task null-check naturally.
+        // available pin on Atomic ECHO BASE's headers). The M5 Stack-chan
+        // base has its own 12 LEDs on the PY32 (6 per side); they get the
+        // same frame, so robots with either kind of LEDs light up.
+        // StopWatch (C152) has no nekomimi wiring at all — leave led_ as
+        // nullptr so app_main / led_task null-check naturally.
         if (kind_ == BoardKind::StopWatch) {
             return;
         }
         const int gpio = (kind_ == BoardKind::AtomNyan)
                              ? NekomimiLedStrip::kDataGpioAtomNyan
                              : NekomimiLedStrip::kDataGpioCoreS3;
-        led_ = std::make_unique<NekomimiLedStrip>(gpio);
+        auto ears = std::make_unique<NekomimiLedStrip>(gpio);
+        if (kind_ == BoardKind::M5Base && expander_) {
+            led_ = std::make_unique<MirroredLedStrip>(std::move(ears),
+                                                      std::make_unique<Py32LedStrip>(*expander_, kM5LedCount));
+        } else {
+            led_ = std::move(ears);
+        }
     }
 
     BoardKind kind() const noexcept { return kind_; }

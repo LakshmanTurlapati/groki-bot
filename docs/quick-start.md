@@ -8,7 +8,7 @@ What you need: a Groki Bot (CoreS3 with a Stack-chan base), a USB-C cable, deskt
 2. Install the gateway on the Mac: `git clone` this repository, `cd groki-bot/gateway`, `uv sync --all-extras`, `cp .env.example .env`.
 3. Set the four values in `gateway/.env` under [Configure Grok Bot native voice](#configure-grok-bot-native-voice).
 4. In a second terminal, start the login helper using the full command in [Configure Grok Bot native voice](#configure-grok-bot-native-voice) and keep it running.
-5. Start the gateway as in [path 2](voice-backends.md#path-2-firmware--gateway), point the robot at `ws://<your computer's LAN IP>:8765` in the BLE settings page, and say "Hi Grok".
+5. Start the gateway as in [path 2](voice-backends.md#path-2-firmware--gateway), point the robot at `ws://<your computer's LAN IP>:8765` in the BLE settings page, and say "Hey Grok".
 
 Gemini stays the default backend; set `STACKCHAN_VOICE_BACKEND=gemini` to switch back. Other voice options (OpenAI Realtime, Gemini Live, Grok Bot hand-off through the `gbot` CLI) are below under [Other voice backends](voice-backends.md#other-voice-backends).
 
@@ -61,7 +61,7 @@ After starting the gateway, check its startup log for `voice_backend=gbot`. In a
 curl http://127.0.0.1:18771/health
 ```
 
-The helper returns `"ok": true` when running. Together these checks show the backend selection and helper configuration, not that login or voice works. Confirm the full path by saying "Hi Grok" to the robot and hearing a reply.
+The helper returns `"ok": true` when running. Together these checks show the backend selection and helper configuration, not that login or voice works. Confirm the full path by saying "Hey Grok" to the robot and hearing a reply.
 
 To return to Gemini, set `STACKCHAN_VOICE_BACKEND=gemini` or remove that line, keep a valid `GEMINI_API_KEY`, and restart the gateway. If another launch command or service environment also sets `gbot`, change that setting too. The independent login helper does not exit automatically; stop it in its terminal when no longer needed.
 

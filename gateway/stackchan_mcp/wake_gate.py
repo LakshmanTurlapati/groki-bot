@@ -31,12 +31,21 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
-# Default wake word "Hi Grok". sherpa-onnx does open-vocabulary keyword
+# Default wake word "Hey Grok". sherpa-onnx does open-vocabulary keyword
 # spotting: keywords are written in the phonemes of the model's tokens.txt, so
 # changing the phrase needs no retraining. A few vowel variants cover accents.
-WAKE_PHRASE = "hi grok"
-WAKE_KEYWORD = "HH AY1 G R AA1 K @hi_grok"
+# Every variant tag contains the phrase, which is how detections are matched.
+WAKE_PHRASE = "hey grok"
+WAKE_KEYWORD = "HH EY1 G R AA1 K @hey_grok"
 WAKE_KEYWORD_VARIANTS = (
+    "HH EY1 G R OW1 K @hey_grok_ow",
+    "HH EY1 G R AO1 K @hey_grok_ao",
+    "HH EY1 G R AH1 K @hey_grok_ah",
+)
+# Previous default "Hi Grok": set STACKCHAN_WAKE_PHRASE=hi grok.
+HI_GROK_WAKE_PHRASE = "hi grok"
+HI_GROK_WAKE_KEYWORD = "HH AY1 G R AA1 K @hi_grok"
+HI_GROK_WAKE_KEYWORD_VARIANTS = (
     "HH AY1 G R OW1 K @hi_grok_ow",
     "HH AY1 G R AO1 K @hi_grok_ao",
     "HH AY1 G R AH1 K @hi_grok_ah",
@@ -55,11 +64,21 @@ DEFAULT_SAMPLE_RATE = 16_000
 DEFAULT_PREROLL_S = 2.0
 DEFAULT_WAKE_IDLE_S = 30.0
 DEFAULT_WAKE_MAX_LISTENING_S = 45.0
+# The voice bridges end a conversation this long after a reply when nobody speaks.
+DEFAULT_CONVERSATION_IDLE_S = 8.0
 DEFAULT_ACTIVITY_RMS = 500.0
+# Voiced audio must last this long to count as the user talking, so a short
+# servo noise does not pause head tracking.
+DEFAULT_USER_SPEECH_ONSET_S = 0.15
+# The user still counts as talking this long after the last voiced frame, which
+# carries tracking across the gaps between words.
+DEFAULT_USER_SPEECH_HANGOVER_S = 0.8
 DEFAULT_KWS_RESET_INTERVAL_S = 60.0
 DEFAULT_KWS_RESET_DEFER_MAX_S = 15.0
 DEFAULT_TTS_STUCK_MAX_S = 300.0
-LISTENING_LED_RGB = (0, 180, 180)
+# Activation flashes bright white; an open listening window then stays dim white.
+WAKE_FLASH_LED_RGB = (255, 255, 255)
+LISTENING_LED_RGB = (40, 40, 40)
 
 
 class WakeGateState(str, Enum):
@@ -217,12 +236,16 @@ class WakeGate:
     kws_reset_interval_s: float = DEFAULT_KWS_RESET_INTERVAL_S
     kws_reset_defer_max_s: float = DEFAULT_KWS_RESET_DEFER_MAX_S
     tts_stuck_max_s: float = DEFAULT_TTS_STUCK_MAX_S
+    user_speech_onset_s: float = DEFAULT_USER_SPEECH_ONSET_S
+    user_speech_hangover_s: float = DEFAULT_USER_SPEECH_HANGOVER_S
     is_tts_active: Callable[[], bool] = field(default=lambda: False)
     clock: Callable[[], float] = time.monotonic
     state: WakeGateState = WakeGateState.DORMANT
     _preroll: deque[bytes] = field(default_factory=deque, init=False)
     _preroll_bytes: int = field(default=0, init=False)
     _last_voice_at: float | None = field(default=None, init=False)
+    _voiced_since: float | None = field(default=None, init=False)
+    _last_speech_at: float | None = field(default=None, init=False)
     _opened_at: float | None = field(default=None, init=False)
     _last_kws_reset_at: float | None = field(default=None, init=False)
     _tts_active_since: float | None = field(default=None, init=False)
@@ -237,6 +260,19 @@ class WakeGate:
     @property
     def is_listening(self) -> bool:
         return self.state == WakeGateState.LISTENING
+
+    @property
+    def speech_until(self) -> float | None:
+        """Clock time the user stops counting as talking; None if they have not spoken."""
+        if self._last_speech_at is None:
+            return None
+        return self._last_speech_at + self.user_speech_hangover_s
+
+    @property
+    def user_speaking(self) -> bool:
+        """The user is talking now, not merely inside an open listening window."""
+        until = self.speech_until
+        return until is not None and self.clock() < until
 
     @property
     def preroll_limit_bytes(self) -> int:
@@ -267,6 +303,7 @@ class WakeGate:
                 return WakeGateResult(closed=closed)
             self.state = WakeGateState.LISTENING
             self._last_voice_at = now
+            self._last_speech_at = now
             self._opened_at = now
             self._listening_window_anchor = now
             forward = tuple(self._preroll)
@@ -275,6 +312,12 @@ class WakeGate:
 
         if pcm_rms_int16(pcm_16khz) >= self.activity_rms_threshold:
             self._last_voice_at = now
+            if self._voiced_since is None:
+                self._voiced_since = now
+            if now - self._voiced_since >= self.user_speech_onset_s:
+                self._last_speech_at = now
+        else:
+            self._voiced_since = None
         return WakeGateResult(forward_pcm=(pcm_16khz,), closed=closed)
 
     def close(self) -> bool:
@@ -282,6 +325,8 @@ class WakeGate:
         was_listening = self.is_listening
         self.state = WakeGateState.DORMANT
         self._last_voice_at = None
+        self._voiced_since = None
+        self._last_speech_at = None
         self._opened_at = None
         self._listening_window_anchor = None
         self._clear_preroll()
@@ -289,6 +334,37 @@ class WakeGate:
             self.kws.reset()
             self._last_kws_reset_at = self.clock()
         return was_listening
+
+    def open(self) -> bool:
+        """Start a listening window without the wake word.
+
+        Used after the robot speaks on its own, so the user can answer. An
+        already open window only has its timers restarted. Buffered pre-roll
+        is dropped: it is room audio from before the window, not an answer.
+        Returns True when a dormant gate was opened.
+        """
+        if self.is_listening:
+            self.extend()
+            return False
+        self.state = WakeGateState.LISTENING
+        self._opened_at = self.clock()
+        self._clear_preroll()
+        self.extend()
+        return True
+
+    def extend(self) -> bool:
+        """Restart the idle and maximum timers of an open window.
+
+        The device microphone is off while the robot speaks, so the gate may
+        never see a reply end; the caller reports it instead. A dormant gate
+        stays dormant. Returns whether a window is open.
+        """
+        if not self.is_listening:
+            return False
+        now = self.clock()
+        self._last_voice_at = now
+        self._listening_window_anchor = now
+        return True
 
     def reset(self) -> None:
         self.close()
@@ -436,6 +512,7 @@ def create_wake_gate_from_env(
     return WakeGate(
         kws=spotter,
         idle_s=_float_env("STACKCHAN_WAKE_IDLE_S", DEFAULT_WAKE_IDLE_S),
+        user_speech_hangover_s=_float_env("STACKCHAN_USER_SPEECH_HANGOVER_S", DEFAULT_USER_SPEECH_HANGOVER_S),
         max_listening_s=_float_env(
             "STACKCHAN_WAKE_MAX_LISTENING_S",
             DEFAULT_WAKE_MAX_LISTENING_S,
@@ -450,6 +527,11 @@ def create_wake_gate_from_env(
         ),
         clock=clock,
     )
+
+
+def conversation_idle_timeout_from_env() -> float:
+    """Seconds of silence after a reply before the conversation ends; 0 disables."""
+    return max(0.0, _float_env("STACKCHAN_CONVERSATION_IDLE_S", DEFAULT_CONVERSATION_IDLE_S))
 
 
 def model_download_commands(target_dir: str | Path | None = None) -> str:
@@ -475,6 +557,8 @@ def keywords_file_body(keyword: str) -> str:
     variants: tuple[str, ...] = ()
     if wanted == WAKE_KEYWORD:
         variants = WAKE_KEYWORD_VARIANTS
+    elif wanted == HI_GROK_WAKE_KEYWORD:
+        variants = HI_GROK_WAKE_KEYWORD_VARIANTS
     elif wanted == HEY_GROKI_WAKE_KEYWORD:
         variants = HEY_GROKI_WAKE_KEYWORD_VARIANTS
     return "".join(f"{line}\n" for line in (wanted, *variants))
@@ -537,9 +621,11 @@ def _keyword_from_env() -> str:
         raw = os.getenv(name)
         if raw and raw.strip():
             return raw.strip()
-    phrase = _phrase_from_env()
-    if phrase.lower() == HEY_GROKI_WAKE_PHRASE:
+    phrase = _phrase_from_env().lower()
+    if phrase == HEY_GROKI_WAKE_PHRASE:
         return HEY_GROKI_WAKE_KEYWORD
+    if phrase == HI_GROK_WAKE_PHRASE:
+        return HI_GROK_WAKE_KEYWORD
     return WAKE_KEYWORD
 
 

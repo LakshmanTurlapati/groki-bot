@@ -264,5 +264,56 @@ int main() {
               blur ? "excessive exposure movement was accepted" : "uncommanded physical movement was accepted");
         check(!f.control.submit(HeadControl::Operation::Apply, f.now, id), "rejected motion token remained live");
     }
+    {
+        Fixture f;
+        f.control.set_tracking_mode(TrackingMode::Engaged);
+        check(f.control.engaged(), "engaged mode not reported");
+        check(f.control.idle_paused(f.now), "engaged mode allowed idle motion");
+        auto id = f.capture({0, 0});
+        auto seq = f.control.submit(HeadControl::Operation::Apply, f.now, id, {5, 2});
+        check(f.complete(*seq, Pose{0, 0}).has_value(), "engaged mode refused a correction");
+        check(f.control.target_is_tracking(), "engaged correction lost its tracking source");
+        check(f.control.tracking_holds(f.now), "engaged mode did not hold the tracked pose");
+        f.control.set_tracking_mode(TrackingMode::Tracking);
+        check(!f.control.freeze_automatic({1, 1}), "tracking to engaged transition froze the head");
+        f.control.set_tracking_mode(TrackingMode::Engaged);
+        check(!f.control.freeze_automatic({1, 1}), "engaged transition froze the head");
+        f.control.set_tracking_mode(TrackingMode::Conversation);
+        check(!f.control.engaged() && f.control.freeze_automatic({3, 4}), "user speech did not freeze the head");
+        check(f.control.target().yaw == 3 && !f.control.target_is_tracking(), "user speech left a tracking target");
+    }
+    {
+        Fixture f;
+        auto id = f.capture({0, 0});
+        auto seq = f.control.submit(HeadControl::Operation::Apply, f.now, id, {10, 5});
+        f.complete(*seq, Pose{0, 0});
+        f.control.set_sleeping(true);
+        check(f.control.sleeping(), "sleep not reported");
+        check(f.control.target().yaw == 0 && f.control.target().pitch == 0, "sleep did not target the rest pose");
+        check(!f.control.target_is_tracking(), "rest pose kept the tracking source");
+        check(f.control.take_target().speed == 200, "rest pose lost its gentle speed");
+        check(!f.control.submit(HeadControl::Operation::Prepare, f.now), "sleep accepted a capture");
+        check(f.control.idle_paused(f.now + 100000), "sleep allowed idle motion");
+        check(!f.control.set_target({9, 9}, 200, HeadSource::Idle, f.now), "sleep accepted an idle pose");
+        f.control.set_tracking_mode(TrackingMode::Conversation);
+        check(!f.control.freeze_automatic({7, 7}), "mode change cancelled the return to rest");
+        check(f.control.target().yaw == 0, "freeze moved the rest target");
+        f.control.set_tracking_mode(TrackingMode::Tracking);
+        f.control.set_sleeping(false);
+        check(!f.control.sleeping() && !f.control.idle_paused(f.now), "waking left the head paused");
+        f.capture({0, 0});
+    }
+    {
+        Fixture f;
+        auto id = f.capture({0, 0});
+        f.control.set_sleeping(true);
+        check(!f.control.submit(HeadControl::Operation::Apply, f.now, id, {1, 1}), "sleep kept a live frame token");
+        f.control.set_sleeping(false);
+        check(!f.control.submit(HeadControl::Operation::Apply, f.now, id, {1, 1}), "waking revived a stale frame");
+        f.control.set_target({6, 6}, 200, HeadSource::Manual, f.now);
+        f.control.set_sleeping(true);
+        f.control.set_target({-6, -6}, 200, HeadSource::Manual, f.now);
+        check(f.control.target().yaw == -6, "sleep blocked an explicit head command");
+    }
     std::cout << "Head tracking control checks passed\n";
 }

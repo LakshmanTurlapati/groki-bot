@@ -7,7 +7,7 @@ Each path adds to the one before it. Start with path 1.
 | | What you get | What you need |
 |---|---|---|
 | **1. Firmware only** (start here) | Voice conversation with the robot through OpenAI Realtime or Google Gemini Live, using your own API key | The robot, a USB-C cable, desktop Chrome or Edge, an OpenAI or Gemini API key |
-| **2. + gateway** | Computer-side voice and "Hi Grok" wake word, with Gemini Live or Grok login voice; optional robot-camera face tracking and MCP | Compatible firmware, a computer connected over USB or Wi-Fi, and the chosen backend configuration; see [gateway/](../gateway/README.md) |
+| **2. + gateway** | Computer-side voice and "Hey Grok" wake word, with Gemini Live or Grok login voice; optional robot-camera face tracking and MCP | Compatible firmware, a computer connected over USB or Wi-Fi, and the chosen backend configuration; see [gateway/](../gateway/README.md) |
 | **3. + Grok Bot** | Hand tasks to a desktop agent and receive completion updates | Grok Bot signed in on that computer; native transport for Grok voice, optional CLI forwarding for Gemini |
 
 How the pieces talk to each other (ports, protocol, message flow, what each part needs): [docs/architecture.md](architecture.md).
@@ -41,7 +41,7 @@ Use this if you want the robot's voice to run through your computer, for example
    - "XiaoZhi 服务器 URL" (XiaoZhi server URL): `ws://<your computer's LAN IP>:8765`, for example `ws://192.168.1.20:8765`.
    - "XiaoZhi 令牌" (XiaoZhi token): if the gateway has `STACKCHAN_TOKEN` set, enter the same value here. If the gateway has no token, leave this empty.
    - Click "保存并重启" (Save and restart).
-4. Check <http://127.0.0.1:8766/debug/status> on the computer: `"device": {"connected": true}`. Say "Hi Grok". To use "Hey Groki" as the wake word instead, set `STACKCHAN_WAKE_PHRASE=hey groki` in `gateway/.env` and restart the gateway.
+4. Check <http://127.0.0.1:8766/debug/status> on the computer: `"device": {"connected": true}`. Say "Hey Grok". To use "Hey Groki" as the wake word instead, set `STACKCHAN_WAKE_PHRASE=hey groki` in `gateway/.env` and restart the gateway.
 
 If the robot is plugged in over USB and cannot reach the computer over Wi-Fi, turn on `STACKCHAN_USB_TRANSPORT=1` and `STACKCHAN_USB_VOICE=1`. The gateway then carries the same Opus audio and `tts` / `listen` events over the serial port. `POST http://127.0.0.1:8766/say` speaks without the wake word. Details and flash steps: [gateway README, USB voice](../gateway/README.md#usb-voice-no-wi-fi-path-to-the-gateway).
 

@@ -23,6 +23,19 @@ target_compile_options(camera_test PRIVATE -Wall -Wextra)
 enable_testing()
 add_test(NAME camera COMMAND camera_test)
 
+add_executable(led_strip_test
+    test_led_strip.cpp
+    ${BOARD_ROOT}/io_expander_py32.cpp
+    ${BOARD_ROOT}/led_strip.cpp
+)
+target_include_directories(led_strip_test PRIVATE
+    ${BOARD_ROOT}/include
+    ${BOARD_ROOT}/../tl_expected/expected/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/idf_stub
+)
+target_compile_options(led_strip_test PRIVATE -Wall -Wextra)
+add_test(NAME led_strip COMMAND led_strip_test)
+
 add_executable(camera_sccb_test test_sccb.cpp ${BOARD_ROOT}/camera_sccb.cpp)
 target_include_directories(camera_sccb_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/idf_stub)
 target_compile_options(camera_sccb_test PRIVATE -Wall -Wextra)

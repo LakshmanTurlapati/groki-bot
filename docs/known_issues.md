@@ -85,6 +85,10 @@ mutex を回しているが、ESP-IDF の priority-inheritance assert は **mute
 - 1h クリアは強い好転シグナルだが race は確率的なので、長時間 (数時間 / 一晩)
   または多回試行で確証を取りたい
 
+**追加対策** (2026-11): M5 base の 12 LED を再び駆動するにあたり、`Py32LedStrip::show()` は
+前回送ったフレームと同じなら I2C を一切発行しない (変化検出)。単色・消灯では I2C 負荷はほぼゼロ、
+breath / gradient / リップシンク中だけ従来どおり 10Hz で 2 transaction。
+
 **残り根本対策候補** (今後、(D) で再発する場合):
 - **(C)** led_task の `kPeriodTicks` を `pdMS_TO_TICKS(33)` (30Hz)
    → `pdMS_TO_TICKS(100)` (10Hz) に落とす。breathing / rainbow には十分

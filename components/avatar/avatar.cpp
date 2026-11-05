@@ -101,12 +101,26 @@ public:
         full_repaint_pending_ = true;
     }
 
+    void set_activity(Expression state, std::uint32_t ttl_ms) {
+        expression_ctrl_.set_activity(state, ttl_ms);
+        full_repaint_pending_ = true;
+    }
+
+    void clear_activity() {
+        expression_ctrl_.clear_activity();
+        full_repaint_pending_ = true;
+    }
+
     void note_activity() {
         expression_ctrl_.note_activity();
     }
 
     Expression resolve_expression(std::uint32_t now_ms) {
         return expression_ctrl_.resolve(now_ms);
+    }
+
+    bool is_asleep() const {
+        return expression_ctrl_.asleep();
     }
 
     bool load_bytecode(std::span<const std::uint8_t> bytes) {
@@ -173,12 +187,24 @@ void Avatar::clear_overlay() noexcept {
     impl_->clear_overlay();
 }
 
+void Avatar::set_activity(Expression state, std::uint32_t ttl_ms) noexcept {
+    impl_->set_activity(state, ttl_ms);
+}
+
+void Avatar::clear_activity() noexcept {
+    impl_->clear_activity();
+}
+
 void Avatar::note_activity() noexcept {
     impl_->note_activity();
 }
 
 Expression Avatar::resolve_expression(std::uint32_t now_ms) noexcept {
     return impl_->resolve_expression(now_ms);
+}
+
+bool Avatar::is_asleep() const noexcept {
+    return impl_->is_asleep();
 }
 
 void Avatar::set_mouth_open(float ratio) noexcept {
@@ -220,8 +246,8 @@ bool Avatar::has_face() const noexcept {
     return impl_->has_face();
 }
 
-void Avatar::set_eye_ring_buffer(const float* buffer) noexcept {
-    impl_->context().aora_ring = buffer;
+void Avatar::set_face_param_buffer(const float* buffer) noexcept {
+    impl_->context().face_params = buffer;
 }
 
 const DrawContext& Avatar::draw_context() const noexcept {

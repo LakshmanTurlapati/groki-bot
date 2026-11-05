@@ -5,7 +5,7 @@
 Groki Bot 分三层，每一层都建立在前一层之上，按需加装：
 
 1. **固件**：跑在机器人上（M5Stack CoreS3 加 Stack-chan 底座）。单独使用时，用你自己的 API 密钥直接和 OpenAI Realtime 或 Gemini Live 对话。
-2. **网关**：跑在你的电脑上（[gateway/](../gateway/README.zh-CN.md)）。机器人改为把麦克风声音发给网关，网关用「Hi Grok」唤醒词加 Gemini Live 对话，并提供 MCP 服务给 Claude 等 MCP 客户端使用。
+2. **网关**：跑在你的电脑上（[gateway/](../gateway/README.zh-CN.md)）。机器人改为把麦克风声音发给网关，网关用「Hey Grok」唤醒词加 Gemini Live 对话，并提供 MCP 服务给 Claude 等 MCP 客户端使用。
 3. **把任务交给 Grok Bot**：网关通过本机一个小的转发服务，把任务交给 Grok Bot 应用里的智能体，再让机器人把智能体的回复念出来。
 
 ```mermaid
@@ -61,7 +61,7 @@ flowchart LR
 
 | | 用法 1：只刷固件 | 用法 2：加网关 | 用法 3：再加 Grok Bot |
 |---|---|---|---|
-| 能做什么 | 语音对话、表情、转头、触摸反应 | 「Hi Grok」唤醒词，语音经电脑走 Gemini Live，Claude 能让机器人说话、读取状态 | 说「帮我查一下」「帮我调研 X」，机器人马上回一句「已经发给助手啦」，智能体每回一段就念一段 |
+| 能做什么 | 语音对话、表情、转头、触摸反应 | 「Hey Grok」唤醒词，语音经电脑走 Gemini Live，Claude 能让机器人说话、读取状态 | 说「帮我查一下」「帮我调研 X」，机器人马上回一句「已经发给助手啦」，智能体每回一段就念一段 |
 | 硬件 | CoreS3 加 Stack-chan 底座（或其他支持的板子），USB-C 线 | 再加一台和机器人在同一 Wi-Fi 的电脑（macOS 测试过，Linux 可跑语音） | 同一台电脑 |
 | 软件 | 桌面版 Chrome 或 Edge（网页刷写和蓝牙设置页） | [uv](https://docs.astral.sh/uv/)、Git、libopus；唤醒词模型可选（约 33 MB） | 已登录的 Grok Bot 应用；[grok-bot-cli](https://github.com/ScriptedAlchemy/grok-bot-cli) 提供的 `gbot` 命令行（`npm install --global grok-bot-cli`，需要较新的 Node.js） |
 | 密钥 | OpenAI 或 Gemini API 密钥，存在机器人的 NVS 里 | `gateway/.env` 里的 Gemini API 密钥；可选的共享令牌 `STACKCHAN_TOKEN` | 不需要额外密钥：`gbot` 使用应用的登录状态，网关不保存任何 Grok 相关凭据 |
@@ -89,7 +89,7 @@ flowchart LR
 
 **握手。** 机器人发送 `{"type": "hello", "features": {"mcp": false}, "audio_params": {"format": "opus", "sample_rate": 16000, "channels": 1, "frame_duration": 60}}`，网关回一条自己的 hello，下行音频格式是 24 kHz。`features.mcp=false` 告诉网关这个固件不接受服务器发来的 MCP 工具调用，所以网关的表情、灯光、头部、拍照这些 MCP 工具到不了 Groki Bot 固件，语音功能完整可用。人脸追踪不走 MCP（见下文）。
 
-**音频。** 上行：Opus，16 kHz 单声道，每帧 60 毫秒，用 WebSocket 二进制消息发送。网关先用本机的唤醒词检测（sherpa-onnx）听，听到「Hi Grok」（设 `STACKCHAN_WAKE_PHRASE=hey groki` 时是「Hey Groki」）之后才把声音转给 Gemini；安静 `STACKCHAN_WAKE_IDLE_S` 秒后结束这一轮聆听。下行：Gemini 回复的声音编码成 Opus（24 kHz，60 毫秒）发回机器人，同时发送 `tts` 状态消息，让机器人知道什么时候开始说、什么时候说完。
+**音频。** 上行：Opus，16 kHz 单声道，每帧 60 毫秒，用 WebSocket 二进制消息发送。网关先用本机的唤醒词检测（sherpa-onnx）听，听到「Hey Grok」（设 `STACKCHAN_WAKE_PHRASE=hey groki` 时是「Hey Groki」）之后才把声音转给 Gemini；安静 `STACKCHAN_WAKE_IDLE_S` 秒后结束这一轮聆听。下行：Gemini 回复的声音编码成 Opus（24 kHz，60 毫秒）发回机器人，同时发送 `tts` 状态消息，让机器人知道什么时候开始说、什么时候说完。
 
 **Gemini Live。** 网关保持一个 Gemini Live 会话（`GEMINI_API_KEY`，默认模型 `gemini-3.8-live`，默认音色 `Kore`），并给 Gemini 一小组可调用的工具：`end_conversation`、`get_current_datetime`、装了 `claude` 命令行时才有的 `ask_claude`（`STACKCHAN_ASK_CLAUDE=0` 可关闭），以及开启后才有的 Mac 控制工具和 `ask_grokbot`。设 `STACKCHAN_GEMINI_DEVICE_TOOLS=1` 时，Gemini 还会拿到 `move_head`、`set_avatar`、`set_all_leds` 和 `express_emotion`；因为 Groki Bot 固件没有 MCP，网关把它们改成 XiaoZhi 消息发送：`head`（需要 v0.2.1 之后的固件）、带表情的 `llm` 和 `led`。
 
@@ -125,7 +125,7 @@ sequenceDiagram
     participant P as 转发服务 :18770
     participant B as gbot 命令行 + Grok Bot 应用
 
-    U->>R: 「Hi Grok，帮我调研一下 X」
+    U->>R: 「Hey Grok，帮我调研一下 X」
     R->>G: Opus 音频（ws :8765）
     G->>G: Gemini 调用 ask_grokbot(task)
     G-->>R: Gemini 说「已经发给助手啦」

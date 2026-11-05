@@ -15,7 +15,9 @@
 namespace stackchan::app {
 
 enum class HeadSource { Idle, Manual, Tracking };
-enum class TrackingMode { Off, Tracking, Conversation };
+// Engaged: a conversation is on, so idle motion stays paused, but camera
+// tracking keeps running. Conversation freezes both while the user talks.
+enum class TrackingMode { Off, Tracking, Conversation, Engaged };
 
 // All target writers share this lock. UART access remains exclusively in
 // servo_task; HTTP and conversation only submit bounded mailbox requests.
@@ -113,8 +115,35 @@ public:
         mode_ = mode;
         ++epoch_;
         invalidate_locked();
-        if (mode != TrackingMode::Tracking && source_ != HeadSource::Manual)
+        if (!tracks(mode) && source_ != HeadSource::Manual)
             freeze_automatic_ = true;
+    }
+    bool engaged() const {
+        std::lock_guard lock(mutex_);
+        return mode_ == TrackingMode::Engaged;
+    }
+    bool target_is_tracking() const {
+        std::lock_guard lock(mutex_);
+        return source_ == HeadSource::Tracking;
+    }
+    // The face fell asleep from idle decay: tracking and idle motion stop and
+    // the head returns to rest. Manual commands still move it.
+    void set_sleeping(bool sleeping) {
+        std::lock_guard lock(mutex_);
+        if (sleeping_ == sleeping)
+            return;
+        sleeping_ = sleeping;
+        ++epoch_;
+        invalidate_locked();
+        if (!sleeping)
+            return;
+        head_hold_until_ms.store(0);
+        freeze_automatic_ = false;
+        store_target_locked({0.0f, 0.0f}, kRestSpeed, HeadSource::Idle);
+    }
+    bool sleeping() const {
+        std::lock_guard lock(mutex_);
+        return sleeping_;
     }
     void disconnect_tracking() {
         std::lock_guard lock(mutex_);
@@ -126,6 +155,8 @@ public:
     }
     bool freeze_automatic(Pose current) {
         std::lock_guard lock(mutex_);
+        if (sleeping_)
+            freeze_automatic_ = false; // Holding here would cancel the return to rest.
         if (!freeze_automatic_ || source_ == HeadSource::Manual)
             return false;
         freeze_automatic_ = false;
@@ -140,8 +171,7 @@ public:
     bool tracking_holds(std::uint32_t now) {
         std::lock_guard lock(mutex_);
         expire_locked(now);
-        return mode_ == TrackingMode::Tracking && source_ == HeadSource::Tracking &&
-               before(now, head_hold_until_ms.load());
+        return tracks(mode_) && source_ == HeadSource::Tracking && before(now, head_hold_until_ms.load());
     }
 
     std::optional<std::uint32_t> submit(Operation operation, std::uint32_t now, std::string frame_id = {},
@@ -310,6 +340,11 @@ public:
     }
 
 private:
+    static constexpr std::uint16_t kRestSpeed = 200;
+
+    static bool tracks(TrackingMode mode) {
+        return mode == TrackingMode::Tracking || mode == TrackingMode::Engaged;
+    }
     void expire_locked(std::uint32_t now) {
         if (cooldown_until_ != 0 && !before(now, cooldown_until_))
             cooldown_until_ = 0;
@@ -321,14 +356,13 @@ private:
     }
     bool eligible_locked(std::uint32_t now) {
         expire_locked(now);
-        return available() && mode_ == TrackingMode::Tracking &&
-               (cooldown_until_ == 0 || !before(now, cooldown_until_));
+        return available() && tracks(mode_) && !sleeping_ && (cooldown_until_ == 0 || !before(now, cooldown_until_));
     }
     bool idle_paused_locked(std::uint32_t now) {
         expire_locked(now);
         const auto hold = head_hold_until_ms.load();
-        return mode_ == TrackingMode::Conversation || (reserved_until_ != 0 && before(now, reserved_until_)) ||
-               (hold != 0 && before(now, hold));
+        return sleeping_ || mode_ == TrackingMode::Conversation || mode_ == TrackingMode::Engaged ||
+               (reserved_until_ != 0 && before(now, reserved_until_)) || (hold != 0 && before(now, hold));
     }
     void store_target_locked(Pose pose, std::uint16_t speed, HeadSource source) {
         target_speed_ = speed;
@@ -353,7 +387,7 @@ private:
     std::uint32_t revision_ = 0, epoch_ = 0, sequence_ = 0, nonce_ = 0, frame_sequence_ = 0;
     std::uint32_t cooldown_until_ = 0, reserved_until_ = 0, frame_revision_ = 0;
     std::uint32_t result_sequence_ = 0, reservation_sequence_ = 0;
-    bool freeze_automatic_ = false, token_ready_ = false, taken_ = false;
+    bool freeze_automatic_ = false, token_ready_ = false, taken_ = false, sleeping_ = false;
     bool frame_motion_ = false, exposure_ready_ = false;
     std::string frame_id_;
     Pose frame_pose_{};

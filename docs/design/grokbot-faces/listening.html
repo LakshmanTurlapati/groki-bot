@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grok Bot Listening face</title>
+<style>
+body{margin:0;background:#121212}
+@keyframes wanderL{0%,15%{transform:translate(50px,-16px) scale(0.98,1)}27%,39%{transform:translate(30px,-30px) scale(1,0.98)}45%,62%{transform:translate(8px,-38px) scale(0.98,0.9)}69%,88%{transform:translate(2px,-17px) scale(0.98,1)}100%{transform:translate(50px,-16px) scale(0.98,1)}}
+@keyframes wanderR{0%,15%{transform:translate(86px,-30px) scale(0.55,1)}27%,39%{transform:translate(75px,-42px) scale(0.81,0.83)}45%,62%{transform:translate(58px,-46px) scale(0.98,0.75)}69%,88%{transform:translate(56px,-27px) scale(1,0.98)}100%{transform:translate(86px,-30px) scale(0.55,1)}}
+.eyeL{animation:wanderL 5s ease-in-out infinite;transform-origin:50% 50%}
+.eyeR{animation:wanderR 5s ease-in-out infinite;transform-origin:50% 50%}
+</style>
+<style>html,body{height:100%}body{display:grid;place-items:center;margin:0}</style>
+</head>
+<body>
+<div style="width: 320px; height: 240px; background: #121212; position: relative; overflow: hidden">
+<div style="position: absolute; left: 61.5px; top: 52.5px; width: 197px; height: 135px; transform: rotate(-15deg)">
+<div style="position: absolute; left: 0; top: 0; width: 197px; height: 135px; border-radius: 67.5px; background: #777777; overflow: hidden">
+<div class="eyeL" style="position: absolute; left: 76.5px; top: 47px; width: 44px; height: 41px; border-radius: 50%; background: #121212"></div>
+<div class="eyeR" style="position: absolute; left: 77.5px; top: 47.5px; width: 42px; height: 40px; border-radius: 50%; background: #121212"></div>
+</div>
+</div>
+</div>
+</body>
+</html>

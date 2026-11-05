@@ -20,6 +20,7 @@ import websockets
 import websockets.exceptions
 from websockets.asyncio.server import ServerConnection
 
+from . import bot_activity
 from .audio_stream import SpeakResult, handle_audio_frame, speak_text
 from .cloud_proxy import CloudConnectionInfo, CloudProxy
 from .debug_status import DebugStatus, get_debug_status
@@ -72,6 +73,9 @@ class ESP32Connection:
         self.transport: str = "websocket"
         self.camera_tracking_v1 = False
         self.camera_tracking_v2 = False
+        self.camera_tracking_engaged = False
+        # Firmware draws Grok Bot run states from {"type": "activity"}.
+        self.bot_activity_v1 = False
         self._proxy_stop_task: asyncio.Task[None] | None = None
 
     @property
@@ -222,7 +226,7 @@ class ESP32Connection:
         }
 
     async def send_head_tracking(self, mode: str) -> None:
-        if mode not in {"tracking", "conversation", "off"}:
+        if mode not in {"tracking", "engaged", "conversation", "off"}:
             raise ValueError("Invalid head tracking mode")
         if not self.connected or not self.camera_tracking_v1:
             raise ConnectionError("Camera tracking is unavailable")
@@ -244,6 +248,13 @@ class ESP32Connection:
                 raise ValueError("Tracking corrections must be finite")
             message.update(delta_yaw=max(-15.0, min(15.0, delta_yaw)),
                            delta_pitch=max(-10.0, min(10.0, delta_pitch)))
+        await asyncio.wait_for(self._ws_send(json.dumps(message)), 1.0)
+
+    async def send_activity(self, state: str, ttl_ms: int = 0) -> None:
+        """Send a Grok Bot run state for the face; no-op on firmware without the feature."""
+        if not self.connected or not self.bot_activity_v1:
+            return
+        message = {"type": "activity", "state": state, "ttl_ms": max(0, int(ttl_ms))}
         await asyncio.wait_for(self._ws_send(json.dumps(message)), 1.0)
 
     async def speak(self, text: str, emotion: str | None = None) -> SpeakResult:
@@ -490,6 +501,10 @@ class ESP32Manager:
             connection.mcp_supported = bool(features.get("mcp"))
             connection.camera_tracking_v1 = features.get("camera_tracking_v1") is True
             connection.camera_tracking_v2 = connection.camera_tracking_v1 and features.get("camera_tracking_v2") is True
+            connection.camera_tracking_engaged = (
+                connection.camera_tracking_v1 and features.get("camera_tracking_engaged_v1") is True
+            )
+            connection.bot_activity_v1 = features.get("bot_activity_v1") is True
         else:
             connection.mcp_supported = False
             connection.camera_tracking_v1 = False
@@ -515,6 +530,8 @@ class ESP32Manager:
                     raise ConnectionError("WebSocket voice became active during USB startup")
                 self._connection = connection
                 self._debug_status.on_device_connected(connection.device_id)
+            if connection.bot_activity_v1:
+                bot_activity.tracker().resend()
             resp = HelloResponse(session_id=session_id, transport="usb")
             await sender.send(resp.model_dump_json())
             changed = getattr(self, "on_connection_changed", None)
@@ -597,6 +614,7 @@ class ESP32Manager:
         self._vision_url = vision_url
         self._vision_token = vision_token
         logger.info("ESP32 WebSocket server starting on ws://%s:%d", host, port)
+        self._attach_activity_sink(asyncio.get_running_loop())
         self._server = await websockets.serve(
             self._handler,
             host,
@@ -606,6 +624,7 @@ class ESP32Manager:
 
     async def stop(self) -> None:
         """Stop the WebSocket server."""
+        bot_activity.tracker().set_sink(None)
         # Cancel any pending initialization tasks
         for task in self._init_tasks:
             task.cancel()
@@ -793,6 +812,10 @@ class ESP32Manager:
                     connection.mcp_supported = mcp_supported
                     connection.camera_tracking_v1 = features.get("camera_tracking_v1") is True
                     connection.camera_tracking_v2 = connection.camera_tracking_v1 and features.get("camera_tracking_v2") is True
+                    connection.camera_tracking_engaged = (
+                        connection.camera_tracking_v1 and features.get("camera_tracking_engaged_v1") is True
+                    )
+                    connection.bot_activity_v1 = features.get("bot_activity_v1") is True
                     if not mcp_supported:
                         # Voice-only chassis (e.g. ciniml/stackchan-idf's
                         # XiaoZhiClient): accept the connection for audio +
@@ -853,6 +876,9 @@ class ESP32Manager:
                         self._connection = connection
                         registered = True
                         self._debug_status.on_device_connected(device_id)
+                    if connection.bot_activity_v1:
+                        # A robot that (re)connects mid-run shows the run.
+                        bot_activity.tracker().resend()
 
                     if self.on_connection_changed is not None:
                         await self.on_connection_changed()
@@ -1057,6 +1083,26 @@ class ESP32Manager:
         ):
             self.on_head_command()
         return await self._connection.call_tool(name, arguments)
+
+    async def send_activity(self, state: str, ttl_ms: int = 0) -> None:
+        """Grok Bot run state for the connected device's face (best effort)."""
+        connection = self._connection
+        if connection is None or not connection.connected:
+            return
+        try:
+            await connection.send_activity(state, ttl_ms)
+        except Exception as exc:  # noqa: BLE001 - the face is best effort
+            logger.debug("activity %s not sent: %s", state, exc)
+
+    def _attach_activity_sink(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Route bot_activity updates (any thread) onto this event loop."""
+
+        def sink(state: str, ttl_ms: int) -> None:
+            if loop.is_closed():
+                return
+            asyncio.run_coroutine_threadsafe(self.send_activity(state, ttl_ms), loop)
+
+        bot_activity.tracker().set_sink(sink)
 
     async def send_emotion(
         self,

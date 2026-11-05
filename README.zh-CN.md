@@ -12,7 +12,7 @@ Groki Bot 是一台开源桌面机器人（M5Stack CoreS3 加 Stack-chan 底座�
 ## 特性
 
 - 原生语音（仅 macOS）：直接和 Grok Bot 应用里的智能体语音交谈，复用 Mac 上应用的现有登录状态，不用另配 xAI 语音 API 密钥。
-- 免触碰语音唤醒：随时呼叫「Hi Grok」即可开启对话，由电脑端网关轻量本地算法实时检测唤醒词。
+- 免触碰语音唤醒：随时呼叫「Hey Grok」即可开启对话，由电脑端网关轻量本地算法实时检测唤醒词。
 - 动态人脸追踪：让机器人转头注视你的位置，结合 Mac 摄像头识别人脸并实时驱动双轴舵机底座转向。
 - 灵动表情反馈：机器人自带表情引擎，有 15 种表情，会眨眼。
 - 网页一键刷机与 OTA：免去本地搭建交叉编译环境，通过 Chrome 或 Edge 浏览器网页即可一键烧录固件，并支持 Wi-Fi 设备端 OTA 升级。
@@ -25,7 +25,7 @@ Groki Bot 是一台开源桌面机器人（M5Stack CoreS3 加 Stack-chan 底座�
    cd gateway && uv sync --all-extras
    ```
 3. 切换到 Grok 语音：默认后端是 Gemini，需要在 `gateway/.env` 里写 `STACKCHAN_VOICE_BACKEND=gbot` 和你的 agent 名字、ID；保持 Grok Bot 桌面应用已登录，另开终端常驻运行登录桥，启动网关，并在蓝牙设置页把机器人指向电脑的网关地址。
-4. 呼叫唤醒词开始对话：对机器人说出 "Hi Grok" 即可开始语音交流，详细的环境变量配置、登录桥常驻命令与切回方法请参阅[配置 Grok Bot 原生语音](docs/quick-start.zh-CN.md#配置-grok-bot-原生语音)。
+4. 呼叫唤醒词开始对话：对机器人说出 "Hey Grok" 即可开始语音交流，详细的环境变量配置、登录桥常驻命令与切回方法请参阅[配置 Grok Bot 原生语音](docs/quick-start.zh-CN.md#配置-grok-bot-原生语音)。
 
 ## 文档
 

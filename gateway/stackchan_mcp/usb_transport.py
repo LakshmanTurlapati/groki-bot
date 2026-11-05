@@ -47,6 +47,10 @@ from .usb_voice_framer import CAMERA_CHUNK, UsbVoiceFrame, UsbVoiceLine, UsbVoic
 logger = logging.getLogger(__name__)
 
 
+class CameraSleeping(RuntimeError):
+    """The robot is asleep and takes no tracking frames until it wakes."""
+
+
 class UsbToolError(RuntimeError):
     """Raised when the firmware MCP server returns a JSON-RPC error response.
 
@@ -304,6 +308,8 @@ class UsbTransport:
             result = response.get("result", {})
             if not isinstance(result, dict):
                 raise ConnectionError("Invalid USB camera response")
+            if result.get("sleeping") is True:
+                raise CameraSleeping("sleeping")
             if result.get("busy") is True:
                 return "", b""
             if result.get("error") in {"capture_failed", "encoding_failed"}:

@@ -39,6 +39,11 @@ constexpr float kGrokLhs[kExprCount] = {
     9.0f,  // Dizzy
     4.2f,  // Affection
     10.5f, // Bored
+    14.0f, // Working
+    6.5f,  // Waiting
+    7.5f,  // Blocked
+    3.0f,  // Done
+    9.5f,  // Failed
 };
 
 bool near(float a, float b) {
@@ -400,7 +405,7 @@ int main() {
         CHECK(c.resolve(60'000) == Expression::Listening);
     }
 
-    // Idle decay: bored at 2 min, sleepy at 5 min.
+    // Idle decay: bored at 2 min, sleepy at 10 min.
     {
         ExpressionController c;
         CHECK(c.resolve(0) == Expression::Neutral);
@@ -415,6 +420,40 @@ int main() {
         CHECK(c.resolve(ExpressionController::kSleepyAfterMs) == Expression::Sleepy);
         c.note_activity();
         CHECK(c.resolve(ExpressionController::kSleepyAfterMs + 10) == Expression::Neutral);
+    }
+
+    // Only idle decay means asleep: the same face from a mood or a gesture
+    // leaves the robot awake.
+    {
+        ExpressionController c;
+        c.resolve(ExpressionController::kBoredAfterMs);
+        CHECK(!c.asleep());
+        c.resolve(ExpressionController::kSleepyAfterMs);
+        CHECK(c.asleep());
+        c.note_activity();
+        c.resolve(ExpressionController::kSleepyAfterMs + 10);
+        CHECK(!c.asleep());
+    }
+    {
+        ExpressionController c;
+        c.set_base(Expression::Sleepy);
+        CHECK(c.resolve(0) == Expression::Sleepy);
+        CHECK(!c.asleep());
+    }
+    {
+        ExpressionController c;
+        c.set_overlay(Expression::Sleepy, 3000);
+        CHECK(c.resolve(0) == Expression::Sleepy);
+        CHECK(!c.asleep());
+    }
+    // A live voice session keeps it awake even past the sleep timeout.
+    {
+        ExpressionController c;
+        CHECK(c.resolve(ExpressionController::kSleepyAfterMs) == Expression::Sleepy);
+        CHECK(c.asleep());
+        c.set_voice_state(VoiceState::Listening);
+        c.resolve(ExpressionController::kSleepyAfterMs + 10);
+        CHECK(!c.asleep());
     }
 
     // Voice listening wins over decay (a live session is not idle).
@@ -442,6 +481,118 @@ int main() {
         c.set_base(Expression::Happy);
         c.set_voice_state(VoiceState::Listening);
         CHECK(c.resolve(0) == Expression::Listening);
+    }
+
+    // --- Grok Bot activity --------------------------------------------------
+
+    // Sleep follows the design: 10 min without input.
+    CHECK(ExpressionController::kSleepyAfterMs == 10u * 60u * 1000u);
+
+    // Activity outranks voice thinking and the mood; listening and overlays
+    // outrank activity.
+    {
+        ExpressionController c;
+        c.set_base(Expression::Happy);
+        c.set_voice_state(VoiceState::Thinking);
+        c.set_activity(Expression::Working, 0);
+        CHECK(c.resolve(0) == Expression::Working);
+        c.set_voice_state(VoiceState::Listening);
+        CHECK(c.resolve(10) == Expression::Listening);
+        c.set_voice_state(VoiceState::Speaking);
+        c.set_overlay(Expression::Affection, 1000);
+        CHECK(c.resolve(20) == Expression::Affection);
+        CHECK(c.resolve(1020) == Expression::Working);
+    }
+
+    // A live run is not idle: activity outranks idle decay.
+    {
+        ExpressionController c;
+        c.set_activity(Expression::Working, 20u * 60u * 1000u);
+        CHECK(c.resolve(0) == Expression::Working);
+        CHECK(c.resolve(ExpressionController::kSleepyAfterMs) == Expression::Working);
+    }
+
+    // Done plays its default clip + settle, then the face returns to rest.
+    {
+        ExpressionController c;
+        CHECK(ExpressionController::default_activity_ttl_ms(Expression::Done) == 3'700u);
+        c.set_activity(Expression::Done, 0);
+        CHECK(c.resolve(1'000) == Expression::Done);
+        CHECK(c.resolve(4'699) == Expression::Done);
+        CHECK(c.resolve(4'700) == Expression::Neutral);
+        CHECK(!c.activity().has_value());
+    }
+
+    // Keepalive: re-sending the state refreshes the TTL.
+    {
+        ExpressionController c;
+        c.set_activity(Expression::Working, 1'000);
+        CHECK(c.resolve(0) == Expression::Working);
+        c.set_activity(Expression::Working, 1'000);
+        CHECK(c.resolve(900) == Expression::Working);
+        CHECK(c.resolve(1'899) == Expression::Working);
+        CHECK(c.resolve(1'900) == Expression::Neutral);
+    }
+
+    // Unresolved Blocked gives up as Failed after 30 s, and a keepalive does
+    // not restart that clock. Failed then expires on its own.
+    {
+        ExpressionController c;
+        c.set_activity(Expression::Blocked, 0);
+        CHECK(c.resolve(0) == Expression::Blocked);
+        c.set_activity(Expression::Blocked, 0);
+        CHECK(c.resolve(20'000) == Expression::Blocked);
+        CHECK(c.resolve(ExpressionController::kBlockedToFailedMs - 1) == Expression::Blocked);
+        CHECK(c.resolve(ExpressionController::kBlockedToFailedMs) == Expression::Failed);
+        const std::uint32_t failed_end = ExpressionController::kBlockedToFailedMs +
+                                         ExpressionController::default_activity_ttl_ms(Expression::Failed);
+        CHECK(c.resolve(failed_end - 1) == Expression::Failed);
+        CHECK(c.resolve(failed_end) == Expression::Neutral);
+    }
+
+    // A new state restarts the escalation clock: Blocked → Thinking (retry)
+    // → Blocked again counts 30 s from the second Blocked.
+    {
+        ExpressionController c;
+        c.set_activity(Expression::Blocked, 0);
+        CHECK(c.resolve(0) == Expression::Blocked);
+        c.set_activity(Expression::Thinking, 0);
+        CHECK(c.resolve(25'000) == Expression::Thinking);
+        c.set_activity(Expression::Blocked, 0);
+        CHECK(c.resolve(26'000) == Expression::Blocked);
+        CHECK(c.resolve(55'999) == Expression::Blocked);
+        CHECK(c.resolve(56'000) == Expression::Failed);
+    }
+
+    // An unanswered question expires after 10 min straight into Sleepy:
+    // expiry is not input, so the idle clock ran the whole time.
+    {
+        ExpressionController c;
+        c.set_activity(Expression::Waiting, 0);
+        CHECK(c.resolve(0) == Expression::Waiting);
+        CHECK(c.resolve(ExpressionController::kSleepyAfterMs - 1) == Expression::Waiting);
+        CHECK(c.resolve(ExpressionController::kSleepyAfterMs) == Expression::Sleepy);
+    }
+
+    // Clearing the activity shows the mood again and counts as input.
+    {
+        ExpressionController c;
+        c.set_base(Expression::Curious);
+        c.set_activity(Expression::Working, 0);
+        CHECK(c.resolve(0) == Expression::Working);
+        c.clear_activity();
+        CHECK(c.resolve(ExpressionController::kBoredAfterMs + 5) == Expression::Curious);
+    }
+
+    // The run states blend like any other expression.
+    {
+        ExpressionController c;
+        DrawContext ctx;
+        c.set_target(Expression::Done);
+        c.apply(ctx, 0);
+        c.apply(ctx, ExpressionController::kDurationMs);
+        CHECK(ctx.expression == Expression::Done);
+        CHECK(near(mix_lhs(ctx), kGrokLhs[expr_index(Expression::Done)]));
     }
 
     return avtest::finish("expression_controller");

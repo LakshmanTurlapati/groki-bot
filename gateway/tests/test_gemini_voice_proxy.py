@@ -27,6 +27,7 @@ from stackchan_mcp.gemini_voice_proxy import GEMINI_HELLO_MARKER, GeminiVoicePro
 from stackchan_mcp.opus_codec import OUTPUT_FRAME_BYTES
 from stackchan_mcp.wake_gate import (
     LISTENING_LED_RGB,
+    WAKE_FLASH_LED_RGB,
     WakeGate,
     WakeGateResult,
     WakeGateState,
@@ -214,9 +215,11 @@ class FakeUSBTransport:
     def __init__(self, *, connected: bool = True, raise_exc: Exception | None = None) -> None:
         self.connected = connected
         self.calls: list[tuple[str, dict]] = []
+        self.timeouts: list[float | None] = []
         self._raise = raise_exc
 
-    async def call_tool(self, name: str, args: dict) -> dict:
+    async def call_tool(self, name: str, args: dict, *, timeout_s: float | None = None) -> dict:
+        self.timeouts.append(timeout_s)
         if self._raise is not None:
             raise self._raise
         self.calls.append((name, args))
@@ -396,7 +399,7 @@ async def test_wake_gate_blocks_audio_until_keyword_then_replays_preroll(
     assert bridge.audio_sent == [b"PCM" * 4, b"PCM" * 4]
     assert gate.state == WakeGateState.LISTENING
     led_calls = [c for c in esp32.calls if c[0] == "self.led.set_all"]
-    assert led_calls[-1][1] == {"r": 0, "g": 180, "b": 180}
+    assert led_calls[-1][1] == {"r": 255, "g": 255, "b": 255}
 
 
 @pytest.mark.asyncio
@@ -423,7 +426,7 @@ async def test_wake_gate_uses_emotion_channel_when_ws_has_no_mcp(
     assert esp32.emotions == [WAKE_CONFIRM_EMOTION, LISTENING_EMOTION]
     assert LISTENING_EMOTION != "thinking"
     assert "thinking" not in esp32.emotions
-    assert esp32.leds == [LISTENING_LED_RGB]
+    assert esp32.leds == [WAKE_FLASH_LED_RGB]
 
 
 @pytest.mark.asyncio
@@ -471,7 +474,7 @@ async def test_wake_gate_prefers_direct_led_when_mcp_state_unknown(
 
     assert await proxy.send_device_binary(b"wake") is True
 
-    assert esp32.leds == [LISTENING_LED_RGB]
+    assert esp32.leds == [WAKE_FLASH_LED_RGB]
     assert esp32.emotions == [WAKE_CONFIRM_EMOTION, LISTENING_EMOTION]
 
 
@@ -517,7 +520,7 @@ async def test_wake_gate_led_failure_on_ws_only_does_not_break_audio(
     assert await proxy.send_device_binary(b"wake") is True
     assert gate.state == WakeGateState.LISTENING
     assert esp32.emotions == [WAKE_CONFIRM_EMOTION, LISTENING_EMOTION]
-    assert esp32.leds == [LISTENING_LED_RGB]
+    assert esp32.leds == [WAKE_FLASH_LED_RGB]
 
 
 def _tts_states(sent: list) -> list[str]:
@@ -1998,7 +2001,7 @@ async def test_inference_failure_closes_vad_and_context_once(monkeypatch, info):
             return super().process(pcm)
 
     proxy.wake_gate_factory = lambda: FailsAfterWake(kws=ScriptedKeywordSpotter([True]))
-    proxy._signal_wake_chime = lambda: None
+    proxy._signal_wake_chime = lambda *_: None
     activities = []
 
     async def activity(active):
@@ -2177,3 +2180,256 @@ async def test_retired_proxy_cannot_clear_replacement_tts_or_send_late_device_up
     assert esp32.calls == []
     await new.end_tts()
     assert not status.tts_active
+
+
+# --- listening after proactive speech -----------------------------------------
+
+
+async def _start_with_gate(proxy, info, sent, gate):
+    proxy.wake_gate_factory = lambda: gate
+
+    async def send(msg): sent.append(msg)
+
+    await proxy.start(info, {"type": "hello"}, send)
+    await proxy._wake_runner.wait_initialized()
+
+
+async def _speak_reply(proxy) -> None:
+    await proxy._handle_gemini_audio(b"\x00" * OUTPUT_FRAME_BYTES)
+    await proxy.end_tts()
+    await asyncio.gather(*list(proxy._tts_tasks), return_exceptions=True)
+
+
+def _tts_starts(sent) -> int:
+    return sum(
+        1 for m in sent
+        if isinstance(m, str) and json.loads(m).get("type") == "tts" and json.loads(m).get("state") == "start"
+    )
+
+
+async def _speak_text_with_reply(proxy, **kwargs) -> dict[str, Any]:
+    proxy._speak_waits_for_first_audio = lambda: True
+    calls = proxy._bridge.realtime_text_calls
+    speaking = asyncio.create_task(
+        proxy.speak_text("Want to hear a joke?", session_id="s", prompt_audio_frames=[], **kwargs)
+    )
+    while not calls:
+        await asyncio.sleep(0)
+    await _speak_reply(proxy)
+    return await asyncio.wait_for(speaking, 1)
+
+
+@pytest.mark.asyncio
+async def test_speak_text_listens_for_an_answer_after_speaking(monkeypatch, info):
+    proxy, esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    result = await _speak_text_with_reply(proxy, listen_after=True)
+
+    assert result["ok"] is True
+    assert gate.state == WakeGateState.LISTENING
+    led_calls = [c for c in esp32.calls if c[0] == "self.led.set_all"]
+    # Bright activation flash, dimmed to the listening light when the chime ends.
+    assert [c[1] for c in led_calls[-2:]] == [
+        {"r": 255, "g": 255, "b": 255},
+        {"r": 40, "g": 40, "b": 40},
+    ]
+    # The reply, then the chime that tells the user it is their turn.
+    assert _tts_starts(sent) == 2
+    # The answer now reaches the voice backend without the wake word.
+    assert await proxy.send_device_binary(b"answer") is True
+    assert proxy._bridge.audio_sent == [b"PCM" * 4]
+
+
+@pytest.mark.asyncio
+async def test_speak_text_without_listen_stays_dormant(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    result = await _speak_text_with_reply(proxy, listen_after=False)
+
+    assert result["ok"] is True
+    assert gate.state == WakeGateState.DORMANT
+    assert _tts_starts(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_speak_text_without_audio_does_not_leave_a_pending_window(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    result = await proxy.speak_text("hi", session_id="s", prompt_audio_frames=[], listen_after=True)
+
+    assert result["ok"] is False
+    assert proxy._listen_after_tts is False
+    await _speak_reply(proxy)
+    assert gate.state == WakeGateState.DORMANT
+
+
+@pytest.mark.asyncio
+async def test_announced_desktop_result_opens_the_window(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    proxy._on_proactive_response()
+    await _speak_reply(proxy)
+
+    assert gate.state == WakeGateState.LISTENING
+
+
+@pytest.mark.asyncio
+async def test_goodbye_during_proactive_speech_keeps_the_window_closed(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    proxy._on_proactive_response()
+    await proxy._handle_bridge_end_conversation()
+    await _speak_reply(proxy)
+
+    assert gate.state == WakeGateState.DORMANT
+
+
+@pytest.mark.asyncio
+async def test_interrupted_proactive_speech_does_not_invite_a_reply(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    proxy._on_proactive_response()
+    await proxy._handle_gemini_audio(b"\x00" * OUTPUT_FRAME_BYTES)
+    await proxy._abort_in_flight_tts()
+    await _speak_reply(proxy)
+
+    assert gate.state == WakeGateState.DORMANT
+
+
+@pytest.mark.asyncio
+async def test_reply_end_restarts_an_open_window(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    clock = [100.0]
+    gate = WakeGate(
+        kws=ScriptedKeywordSpotter([True]),
+        activity_rms_threshold=0.0,
+        clock=lambda: clock[0],
+    )
+    await _start_with_gate(proxy, info, sent, gate)
+    await proxy.send_device_binary(b"wake")
+    assert gate.state == WakeGateState.LISTENING
+
+    # A desktop result announced while talking does not change the window.
+    proxy._on_proactive_response()
+    assert proxy._listen_after_tts is False
+    clock[0] = 130.0
+    await _speak_reply(proxy)
+
+    assert gate._listening_window_anchor == 130.0
+    assert gate._last_voice_at == 130.0
+
+
+@pytest.mark.asyncio
+async def test_end_conversation_closes_the_window_and_reports_it(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([True]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+    await proxy.send_device_binary(b"wake")
+
+    assert await proxy.end_conversation() is True
+    assert gate.state == WakeGateState.DORMANT
+    assert await proxy.end_conversation() is False
+
+
+# --- status LEDs on firmware without device MCP ---------------------------------
+
+
+class HangingUSBTransport(FakeUSBTransport):
+    """A USB MCP channel whose tool calls never answer, like voice-only firmware."""
+
+    async def call_tool(self, name: str, args: dict, *, timeout_s: float | None = None) -> dict:
+        self.calls.append((name, args))
+        await asyncio.sleep(3600)
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_wake_on_voice_only_firmware_never_waits_for_usb_mcp(monkeypatch, info):
+    esp32 = FakeVoiceOnlyESP32()
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch, esp32=esp32)
+    usb = HangingUSBTransport(connected=True)
+    proxy.usb_transport = usb
+    gate = WakeGate(kws=ScriptedKeywordSpotter([True]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    # A stalled wake overflows the USB voice receive queue (about 1.9 s).
+    assert await asyncio.wait_for(proxy.send_device_binary(b"wake"), 0.5) is True
+    await asyncio.wait_for(asyncio.gather(*list(proxy._tts_tasks)), 1)
+
+    assert gate.state == WakeGateState.LISTENING
+    assert usb.calls == []
+    # Bright flash on activation, kept through the chime, then dim white.
+    assert esp32.leds == [WAKE_FLASH_LED_RGB, LISTENING_LED_RGB]
+
+
+@pytest.mark.asyncio
+async def test_usb_status_calls_give_up_before_the_voice_queue_overflows(monkeypatch, info):
+    proxy, _esp32, sent = _make_proxy(monkeypatch=monkeypatch)
+    usb = FakeUSBTransport(connected=True)
+    proxy.usb_transport = usb
+
+    async def send(msg): sent.append(msg)
+
+    await proxy.start(info, {"type": "hello"}, send)
+    await proxy._set_leds_safe(1, 2, 3)
+    await proxy._set_avatar_safe("happy")
+
+    assert [c[0] for c in usb.calls] == ["self.led.set_all", "self.display.set_avatar"]
+    assert usb.timeouts == [0.5, 0.5]
+
+
+@pytest.mark.asyncio
+async def test_listening_light_dims_after_each_reply(monkeypatch, info):
+    esp32 = FakeVoiceOnlyESP32()
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch, esp32=esp32)
+    gate = WakeGate(kws=ScriptedKeywordSpotter([True]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+    await proxy.send_device_binary(b"wake")
+    await asyncio.gather(*list(proxy._tts_tasks))
+    esp32.leds.clear()
+
+    await _speak_reply(proxy)
+
+    assert esp32.leds == [(0, 80, 180), LISTENING_LED_RGB]
+
+
+@pytest.mark.asyncio
+async def test_say_lights_go_speaking_flash_then_dim_without_turning_off(monkeypatch, info):
+    esp32 = FakeVoiceOnlyESP32()
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch, esp32=esp32)
+    proxy.wake_confirm_hold_s = 0.01
+    gate = WakeGate(kws=ScriptedKeywordSpotter([]), activity_rms_threshold=0.0)
+    await _start_with_gate(proxy, info, sent, gate)
+
+    await _speak_text_with_reply(proxy, listen_after=True)
+    await asyncio.wait_for(asyncio.gather(*list(proxy._tts_tasks)), 1)
+
+    assert esp32.leds == [(0, 80, 180), WAKE_FLASH_LED_RGB, LISTENING_LED_RGB]
+    assert _tts_starts(sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_say_without_a_window_still_turns_the_speaking_light_off(monkeypatch, info):
+    esp32 = FakeVoiceOnlyESP32()
+    proxy, _, sent = _make_proxy(monkeypatch=monkeypatch, esp32=esp32)
+    proxy.wake_gate_factory = lambda: None  # wake word disabled: no window to open
+
+    async def send(msg): sent.append(msg)
+
+    await proxy.start(info, {"type": "hello"}, send)
+    await _speak_text_with_reply(proxy, listen_after=True)
+    await asyncio.wait_for(asyncio.gather(*list(proxy._tts_tasks)), 1)
+
+    assert esp32.leds == [(0, 80, 180), (0, 0, 0)]
