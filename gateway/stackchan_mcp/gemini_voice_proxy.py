@@ -34,17 +34,17 @@ from typing import Any
 from .cloud_proxy import CloudConnectionInfo
 from .debug_status import DebugStatus, get_debug_status
 from .device_emotion import (
-    DEAD_LED_RGB,
     IDLE_EMOTION,
     LISTENING_EMOTION,
     WAKE_CONFIRM_EMOTION,
     face_to_device_emotion,
 )
+from .led_status import LedStatus
 from .edge_tts_provider import EdgeTTSProvider
 from .gemini_live_bridge import GeminiLiveBridge, manual_vad_enabled
 from .opus_codec import StackchanOpusCodec
 from .session_keepalive import SessionKeepalive, keepalive_interval_from_env
-from .wake_gate import LISTENING_LED_RGB, WAKE_FLASH_LED_RGB, WakeGate, create_wake_gate_from_env
+from .wake_gate import WakeGate, create_wake_gate_from_env
 from .wake_gate_runner import WakeGateProcessError, WakeGateRunner, WakeGateSnapshot
 
 logger = logging.getLogger(__name__)
@@ -108,6 +108,7 @@ class GeminiVoiceProxy:
     on_head_command: Callable[[], None] | None = None
     on_device_state: Callable[[str], None] | None = None
     on_conversation_activity: Callable[[bool], Awaitable[None]] | None = None
+    on_user_speech: Callable[[bool], Any] | None = None
     set_face_tracking: Callable[[bool], Awaitable[dict[str, Any]]] | None = None
     debug_status: DebugStatus | None = None
 
@@ -207,6 +208,11 @@ class GeminiVoiceProxy:
     _turn_rx_bytes: int = 0
     _turn_rx_stalls: int = 0
     _turn_rx_max_gap: float = 0.0
+    _led: LedStatus = field(default_factory=LedStatus)
+    _led_worker: asyncio.Task | None = None
+    _led_wake: asyncio.Event = field(default_factory=asyncio.Event)
+    _led_idle: asyncio.Event = field(default_factory=asyncio.Event)
+    _user_speech_edge: bool = False
 
     @property
     def _status(self) -> DebugStatus:
@@ -276,6 +282,25 @@ class GeminiVoiceProxy:
         )
         if became_available and self._ready_event.is_set() and self._keepalive is None:
             self._start_keepalive()
+        speaking = self.user_speaking
+        if speaking == self._user_speech_edge:
+            return
+        self._user_speech_edge = speaking
+        hook = self.on_user_speech
+        if hook is None:
+            return
+        try:
+            result = hook(speaking)
+        except Exception:
+            logger.exception("user-speech tracking hook failed")
+            return
+        if inspect.isawaitable(result):
+            try:
+                task = asyncio.create_task(result)
+            except RuntimeError:
+                return
+            self._tts_tasks.add(task)
+            task.add_done_callback(self._tts_tasks.discard)
 
     async def _start_wake_gate(self) -> None:
         previous, self._wake_runner = self._wake_runner, None
@@ -448,6 +473,8 @@ class GeminiVoiceProxy:
             set_face_tracking=self.set_face_tracking,
             debug_status=self._status,
         )
+        # Model / emotion colours must not light an idle strip or replace speech white.
+        setattr(self._bridge, "_leds_exclusive", True)
         try:
             await self._bridge.start()
         except Exception as exc:
@@ -467,6 +494,9 @@ class GeminiVoiceProxy:
         self.server_hello = self._voice_hello()
         self._ready_event.set()
         self._start_keepalive()
+        # Clear a saved rainbow / leftover status colour before the first wake.
+        self._led.note_off()
+        await self._wait_led()
         logger.info("Gemini voice backend ready (device=%s)", info.device_id or "?")
         return True
 
@@ -525,6 +555,8 @@ class GeminiVoiceProxy:
         await sender(pcm)
 
     async def stop(self) -> None:
+        self._led.note_off()
+        await self._wait_led()
         self._stopped = True
         self._tts_generation += 1
         if self._keepalive is not None:
@@ -624,9 +656,15 @@ class GeminiVoiceProxy:
         if self._wake_runner is not None:
             self._on_wake_runner_change(self._wake_runner)
         await self._signal_manual_vad_end(bridge)
-        if not self._tts_active and not self._edge_tts_requests and not self._reported_dead:
-            await self._set_leds_safe(0, 0, 0)
-            await self._send_device_emotion_safe(IDLE_EMOTION)
+        if self._led.playback or self._tts_active or self._edge_tts_requests:
+            # Playback keeps the white pulse; the resting colour is published when it ends.
+            self._led.chat = False
+            self._led.flash = False
+            self._led.touch()
+        else:
+            self._led.note_chat(False)
+            await self._wait_led()
+        await self._send_device_emotion_safe(IDLE_EMOTION)
         clear_context = getattr(bridge, "clear_conversation_context", None)
         if callable(clear_context):
             try:
@@ -710,7 +748,9 @@ class GeminiVoiceProxy:
         self._reported_dead = False
         await self._signal_manual_vad_start(bridge)
         # Bright white until the chime ends, then dim white while listening.
-        await self._set_leds_safe(*WAKE_FLASH_LED_RGB)
+        # Speech, if one is still owed or in progress, is sent first.
+        self._led.note_chat(True, flash=True)
+        await self._wait_led()
         if woke:
             await self._send_device_emotion_safe(WAKE_CONFIRM_EMOTION)
             if self.wake_confirm_hold_s > 0:
@@ -745,8 +785,9 @@ class GeminiVoiceProxy:
         if self.is_listening:
             await runner.extend()
         if listen_after:
-            # end_tts() left the light for the window that did not open.
-            self._signal_speaking_leds(*self._post_tts_led_rgb())
+            # The window did not open. Drop the speech pulse.
+            self._release_playback_lights()
+            await self._wait_led()
 
     async def _open_after_speech(self, runner: WakeGateRunner) -> bool:
         """Open the window after proactive speech. True when the LEDs were handled."""
@@ -789,9 +830,10 @@ class GeminiVoiceProxy:
         except Exception:
             logger.exception("session-dead abort tts failed")
         try:
-            await self._set_leds_safe(*DEAD_LED_RGB)
+            self._led.note_off()
+            await self._wait_led()
         except Exception:
-            logger.exception("session-dead red LED failed")
+            logger.exception("session-dead LED off failed")
 
     async def _handle_bridge_end_conversation(self) -> None:
         """Close the wake window when Gemini explicitly ends the conversation."""
@@ -1189,11 +1231,12 @@ class GeminiVoiceProxy:
         # while Gemini speaks (firmware stops the idle loop in Speaking state).
         # Fire-and-forget for the same reason as the LED dispatch below.
         self._signal_speaking_avatar(self._speaking_avatar_face())
-        # Light the base ring soft blue while Gemini speaks. Fire-and-forget so
-        # a slow / failing LED call never holds up the Opus stream. The wake
-        # chime keeps the activation flash instead.
+        # White speech pulse. Scheduled, not awaited: this runs under the
+        # device send lock, and the LED send needs that lock too. The wake
+        # chime keeps the activation flash instead of the pulse.
         if not self._chime_active:
-            self._signal_speaking_leds(0, 80, 180)
+            self._led.note_playback(True)
+            self._schedule_led_flush()
         return True
 
     def _signal_wake_chime(self, delay_s: float = 0.0) -> None:
@@ -1230,25 +1273,89 @@ class GeminiVoiceProxy:
             await self.end_tts()
         except Exception as exc:
             logger.warning("wake chime failed: %s", exc)
-            self._signal_speaking_leds(*self._post_tts_led_rgb())
+            self._release_playback_lights()
         finally:
             self._chime_active = False
 
-    def _signal_speaking_leds(self, r: int, g: int, b: int) -> None:
-        """Schedule a non-blocking LED update. Failures are swallowed."""
-        try:
-            task = asyncio.create_task(self._set_leds_safe(r, g, b))
-        except RuntimeError:
-            return  # no running loop — nothing we can do
-        self._tts_tasks.add(task)
-        task.add_done_callback(self._tts_tasks.discard)
+    def _release_playback_lights(self) -> None:
+        """Speech ended. Stay dim while the chat is open; otherwise go dark."""
+        listening = bool(
+            not self._reported_dead and self._wake_gate is not None and self._wake_gate.is_listening
+        )
+        self._led.note_playback(False)
+        if not listening:
+            self._led.chat = False
+            self._led.flash = False
+            self._led.touch()
+        self._schedule_led_flush()
 
-    async def _set_leds_safe(self, r: int, g: int, b: int) -> None:
+    def _signal_speaking_leds(self, r: int, g: int, b: int) -> None:
+        """Compatibility shim. New code uses the phase machine directly."""
+        if (r, g, b) == (0, 0, 0):
+            self._led.note_off()
+        elif r == 255 and g == 255 and b == 255:
+            self._led.note_chat(True, flash=True)
+        else:
+            self._led.note_playback(True)
+        self._schedule_led_flush()
+
+    def _schedule_led_flush(self) -> None:
+        self._led_wake.set()
+        self._led_idle.clear()
+        worker = self._led_worker
+        if worker is not None and not worker.done():
+            return
+        try:
+            self._led_worker = asyncio.create_task(self._led_worker_loop(), name="status-led")
+        except RuntimeError:
+            return
+        self._tts_tasks.add(self._led_worker)
+        self._led_worker.add_done_callback(self._tts_tasks.discard)
+
+    async def _led_worker_loop(self) -> None:
+        try:
+            while True:
+                self._led_wake.clear()
+                mode, rgb = self._led.output()
+                generation = self._led.generation
+                await self._set_leds_safe(*rgb, mode=mode)
+                again = self._led.after_send(mode)
+                if self._stopped and not again and self._led.generation == generation:
+                    return
+                if again or self._led.generation != generation or self._led_wake.is_set():
+                    continue
+                return
+        finally:
+            self._led_idle.set()
+            if self._led_worker is asyncio.current_task():
+                self._led_worker = None
+
+    async def _wait_led(self) -> None:
+        """Block until the latest phase has been handed to the device."""
+        while True:
+            self._schedule_led_flush()
+            worker = self._led_worker
+            if worker is None:
+                return
+            await worker
+            if not self._led_wake.is_set() and not (
+                self._led.speech_pending and not self._led.playback
+            ):
+                return
+
+    async def publish_lights(self) -> None:
+        """Resend the current phase after a reconnect. Idle stays off."""
+        if self._stopped:
+            return
+        self._led.touch()
+        await self._wait_led()
+
+    async def _set_leds_safe(self, r: int, g: int, b: int, mode: str | None = None) -> None:
         """USB-first, WS-fallback LED dispatch. Never raises."""
         if self._stopped:
             return
-        args = {"r": r, "g": g, "b": b}
-        logger.info("status LED dispatch requested rgb=(%s,%s,%s)", r, g, b)
+        rgb_args = {"r": r, "g": g, "b": b}
+        logger.info("status LED dispatch requested mode=%s rgb=(%s,%s,%s)", mode, r, g, b)
         usb = self.usb_transport
         if usb is not None and getattr(usb, "connected", False) and self._device_lacks_mcp():
             # Its MCP tools never answer; waiting for them stalls microphone audio.
@@ -1256,7 +1363,7 @@ class GeminiVoiceProxy:
         elif usb is not None and getattr(usb, "connected", False):
             logger.info("status LED dispatch branch=usb tool=self.led.set_all")
             try:
-                await usb.call_tool("self.led.set_all", args, timeout_s=USB_STATUS_TIMEOUT_S)
+                await usb.call_tool("self.led.set_all", rgb_args, timeout_s=USB_STATUS_TIMEOUT_S)
                 logger.info("status LED dispatch branch=usb ok")
                 return
             except Exception as exc:
@@ -1297,12 +1404,21 @@ class GeminiVoiceProxy:
             )
             try:
                 async with self._send_lock:
-                    _result, error = await send_led(
-                        r,
-                        g,
-                        b,
-                        notify_activity=False,
-                    )
+                    try:
+                        _result, error = await send_led(
+                            r,
+                            g,
+                            b,
+                            mode=mode,
+                            notify_activity=False,
+                        )
+                    except TypeError:
+                        _result, error = await send_led(
+                            r,
+                            g,
+                            b,
+                            notify_activity=False,
+                        )
             except Exception as exc:
                 logger.info("status LED dispatch branch=ws_direct failed error=%s", exc)
             else:
@@ -1329,7 +1445,7 @@ class GeminiVoiceProxy:
         logger.info("status LED dispatch branch=ws_mcp tool=self.led.set_all")
         try:
             async with self._send_lock:
-                await esp32.call_tool("self.led.set_all", args)
+                await esp32.call_tool("self.led.set_all", rgb_args)
         except Exception as exc:
             logger.info("status LED dispatch branch=ws_mcp failed error=%s", exc)
         else:
@@ -1498,10 +1614,16 @@ class GeminiVoiceProxy:
             self._prebuffer_satisfied = False
             self._pcm_prebuffer.clear()
             self._signal_speaking_avatar("idle")
-            if not self._listen_after_tts:
-                # A pending listening window sets its own activation light.
-                self._signal_speaking_leds(*self._post_tts_led_rgb())
+            if self._listen_after_tts:
+                # Keep an unsent speech frame queued. The listening window
+                # publishes flash, then this chime/turn dims it.
+                self._led.playback = False
+                self._led.touch()
+            else:
+                self._release_playback_lights()
             self._clear_turn_emotion_face()
+        if not self._listen_after_tts:
+            await self._wait_led()
         await self._after_tts_stop()
         await self._notify_conversation_activity()
 
@@ -1540,14 +1662,7 @@ class GeminiVoiceProxy:
                     )
             except Exception as exc:
                 logger.debug("abort tts.stop drop: %s", exc)
-            self._signal_speaking_leds(*self._post_tts_led_rgb())
+            self._release_playback_lights()
+            await self._wait_led()
         self._clear_turn_emotion_face()
         await self._notify_conversation_activity()
-
-    def _post_tts_led_rgb(self) -> tuple[int, int, int]:
-        if self._reported_dead:
-            return DEAD_LED_RGB
-        gate = self._wake_gate
-        if gate is not None and gate.is_listening:
-            return LISTENING_LED_RGB
-        return (0, 0, 0)

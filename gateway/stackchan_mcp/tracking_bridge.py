@@ -51,6 +51,7 @@ class TrackingBridge:
         on_head_command: Callable[[], None] | None = None,
         is_tts_active: Callable[[], bool] | None = None,
         is_listening: Callable[[], bool] | None = None,
+        is_user_speaking: Callable[[], bool] | None = None,
         source: str = "mac",
     ) -> None:
         self.esp32 = esp32
@@ -60,8 +61,11 @@ class TrackingBridge:
         self.robot_control = RobotTrackingControl.from_env()
         self.robot_motion_control = SmoothRobotTrackingControl(self.robot_control)
         self._mode = "idle"
-        self._is_tts_active = is_tts_active
-        self._is_listening = is_listening
+        # Bot playback and an open listening window do not hold the head.
+        # Only detected user speech does. The older callbacks stay in the
+        # signature so existing callers keep constructing the bridge.
+        del is_tts_active, is_listening
+        self._is_user_speaking = is_user_speaking
         neutral = float(self.config.neutral_pitch)
         self._yaw = self._output_yaw = self._segment_start_yaw = self._segment_end_yaw = self._cached_yaw = 0.0
         self._pitch = self._output_pitch = self._segment_start_pitch = self._segment_end_pitch = self._cached_pitch = neutral
@@ -81,9 +85,7 @@ class TrackingBridge:
 
     @property
     def mode(self) -> str:
-        if self._is_tts_active is not None and self._is_tts_active():
-            return "working"
-        if self._is_listening is not None and self._is_listening():
+        if self._is_user_speaking is not None and self._is_user_speaking():
             return "quiet"
         return self._mode
 

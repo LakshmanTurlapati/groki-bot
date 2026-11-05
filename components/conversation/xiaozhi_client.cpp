@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Kenta IDA <fuga@fugafuga.org>
 // SPDX-License-Identifier: BSL-1.0
 
+#include "conversation/led_control.hpp"
 #include "conversation/xiaozhi_client.hpp"
 
 #include <atomic>
@@ -748,19 +749,30 @@ private:
         std::uint8_t r = 0;
         std::uint8_t g = 0;
         std::uint8_t b = 0;
-        if (!json_u8(root, "r", r) || !json_u8(root, "g", g) || !json_u8(root, "b", b)) {
-            ESP_LOGW(kTag, "Invalid LED control message: expected type=led and r/g/b in 0..255");
+        const bool has_rgb = json_u8(root, "r", r) && json_u8(root, "g", g) && json_u8(root, "b", b);
+        const char* mode = json_str(root, "mode");
+        if (!has_rgb && (mode == nullptr || mode[0] == '\0')) {
+            ESP_LOGW(kTag, "Invalid LED control message: expected mode or r/g/b in 0..255");
+            return;
+        }
+        const auto parsed = led_control::parse_led_wire(mode, has_rgb, r, g, b);
+        if (parsed.command == led_control::LedWire::Ignore) {
+            ESP_LOGI(kTag, "LED control ignored (voice policy owns the strip)");
             return;
         }
 
         ConversationEvent ev{};
         ev.type = ConversationEventType::LedColor;
-        ev.led_r = r;
-        ev.led_g = g;
-        ev.led_b = b;
+        ev.led_command = static_cast<std::uint8_t>(parsed.command);
+        ev.led_r = parsed.r;
+        ev.led_g = parsed.g;
+        ev.led_b = parsed.b;
         emit(ev);
-        ESP_LOGI(kTag, "LED control message: r=%u g=%u b=%u",
-                 static_cast<unsigned>(r), static_cast<unsigned>(g), static_cast<unsigned>(b));
+        ESP_LOGI(kTag, "LED control message: mode=%s r=%u g=%u b=%u",
+                 mode != nullptr ? mode : "",
+                 static_cast<unsigned>(parsed.r),
+                 static_cast<unsigned>(parsed.g),
+                 static_cast<unsigned>(parsed.b));
     }
 
     void handle_server_hello(const cJSON* root)

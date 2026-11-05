@@ -78,6 +78,7 @@ class FakeVoiceOnlyESP32(FakeESP32):
         super().__init__()
         self.emotions: list[str] = []
         self.leds: list[tuple[int, int, int]] = []
+        self.led_modes: list[str | None] = []
 
     async def send_emotion(self, emotion: str, *, notify_activity: bool = True):
         self.emotions.append(emotion)
@@ -89,9 +90,11 @@ class FakeVoiceOnlyESP32(FakeESP32):
         g: int,
         b: int,
         *,
+        mode: str | None = None,
         notify_activity: bool = True,
     ):
         self.leds.append((r, g, b))
+        self.led_modes.append(mode)
         return {"ok": True, "r": r, "g": g, "b": b}, None
 
 
@@ -426,7 +429,8 @@ async def test_wake_gate_uses_emotion_channel_when_ws_has_no_mcp(
     assert esp32.emotions == [WAKE_CONFIRM_EMOTION, LISTENING_EMOTION]
     assert LISTENING_EMOTION != "thinking"
     assert "thinking" not in esp32.emotions
-    assert esp32.leds == [WAKE_FLASH_LED_RGB]
+    assert esp32.leds == [(0, 0, 0), WAKE_FLASH_LED_RGB]
+    assert esp32.led_modes == ["off", "listen"]
 
 
 @pytest.mark.asyncio
@@ -474,7 +478,7 @@ async def test_wake_gate_prefers_direct_led_when_mcp_state_unknown(
 
     assert await proxy.send_device_binary(b"wake") is True
 
-    assert esp32.leds == [WAKE_FLASH_LED_RGB]
+    assert esp32.leds[-1] == WAKE_FLASH_LED_RGB
     assert esp32.emotions == [WAKE_CONFIRM_EMOTION, LISTENING_EMOTION]
 
 
@@ -520,7 +524,7 @@ async def test_wake_gate_led_failure_on_ws_only_does_not_break_audio(
     assert await proxy.send_device_binary(b"wake") is True
     assert gate.state == WakeGateState.LISTENING
     assert esp32.emotions == [WAKE_CONFIRM_EMOTION, LISTENING_EMOTION]
-    assert esp32.leds == [WAKE_FLASH_LED_RGB]
+    assert esp32.leds[-1] == WAKE_FLASH_LED_RGB
 
 
 def _tts_states(sent: list) -> list[str]:
@@ -622,7 +626,7 @@ async def test_session_dead_closes_listening_and_lights_red(monkeypatch, info):
 
     await proxy._handle_session_dead()
     assert gate.state == WakeGateState.DORMANT
-    assert esp32.leds[-1] == DEAD_LED_RGB
+    assert esp32.leds[-1] == (0, 0, 0)
 
 
 class _RecordingLiveSession:
@@ -706,7 +710,7 @@ async def test_device_audio_cache_timeout_closes_listen_and_lights_red(
 
     assert list(live._pending_audio) == []
     assert gate.state == WakeGateState.DORMANT
-    assert esp32.leds[-1] == DEAD_LED_RGB
+    assert esp32.leds[-1] == (0, 0, 0)
 
 
 class _AbortBoomEdge(FakeEdgeTTSProvider):
@@ -747,7 +751,8 @@ async def test_session_dead_lights_red_when_abort_raises(monkeypatch, info, capl
         assert await proxy.send_device_binary(b"held") is True
         await asyncio.sleep(0.12)
 
-    assert esp32.leds == [DEAD_LED_RGB]
+    assert esp32.leds[-1] == (0, 0, 0)
+    assert DEAD_LED_RGB not in esp32.leds
     assert "abort failed" in caplog.text
 
 
@@ -1164,8 +1169,8 @@ async def test_device_websocket_sends_share_send_lock(monkeypatch, info):
 
 
 @pytest.mark.asyncio
-async def test_begin_tts_lights_blue_leds_via_ws_when_no_usb(monkeypatch, info):
-    """When Gemini opens its mouth, the base ring should turn soft blue."""
+async def test_begin_tts_lights_white_speech_leds_via_ws_when_no_usb(monkeypatch, info):
+    """When Groki speaks, the base ring switches to white. The device pulses it."""
     proxy, esp32, sent = _make_proxy(monkeypatch=monkeypatch)
 
     async def send(msg): sent.append(msg)
@@ -1174,12 +1179,11 @@ async def test_begin_tts_lights_blue_leds_via_ws_when_no_usb(monkeypatch, info):
     esp32.calls.clear()
 
     await proxy._handle_gemini_audio(b"\x00" * OUTPUT_FRAME_BYTES)
-    # LED dispatch is fire-and-forget; let the scheduled task run.
     await asyncio.gather(*list(proxy._tts_tasks), return_exceptions=True)
 
     led_calls = [c for c in esp32.calls if c[0] == "self.led.set_all"]
     assert led_calls, "begin_tts should fire a set_all_leds call"
-    assert led_calls[0][1] == {"r": 0, "g": 80, "b": 180}
+    assert led_calls[0][1] == {"r": 255, "g": 255, "b": 255}
 
 
 @pytest.mark.asyncio
@@ -1866,7 +1870,7 @@ async def test_gate_close_skips_led_off_while_tts_active(monkeypatch, info):
 
     led_calls: list[tuple[int, int, int]] = []
 
-    async def capture_led(r, g, b):
+    async def capture_led(r, g, b, mode=None):
         led_calls.append((r, g, b))
 
     proxy._set_leds_safe = capture_led  # type: ignore[method-assign]
@@ -2371,7 +2375,8 @@ async def test_wake_on_voice_only_firmware_never_waits_for_usb_mcp(monkeypatch, 
     assert gate.state == WakeGateState.LISTENING
     assert usb.calls == []
     # Bright flash on activation, kept through the chime, then dim white.
-    assert esp32.leds == [WAKE_FLASH_LED_RGB, LISTENING_LED_RGB]
+    assert esp32.led_modes[:3] == ["off", "listen", "listen"]
+    assert esp32.leds[:3] == [(0, 0, 0), WAKE_FLASH_LED_RGB, LISTENING_LED_RGB]
 
 
 @pytest.mark.asyncio
@@ -2386,8 +2391,12 @@ async def test_usb_status_calls_give_up_before_the_voice_queue_overflows(monkeyp
     await proxy._set_leds_safe(1, 2, 3)
     await proxy._set_avatar_safe("happy")
 
-    assert [c[0] for c in usb.calls] == ["self.led.set_all", "self.display.set_avatar"]
-    assert usb.timeouts == [0.5, 0.5]
+    assert [c[0] for c in usb.calls] == [
+        "self.led.set_all",
+        "self.led.set_all",
+        "self.display.set_avatar",
+    ]
+    assert usb.timeouts == [0.5, 0.5, 0.5]
 
 
 @pytest.mark.asyncio
@@ -2402,7 +2411,8 @@ async def test_listening_light_dims_after_each_reply(monkeypatch, info):
 
     await _speak_reply(proxy)
 
-    assert esp32.leds == [(0, 80, 180), LISTENING_LED_RGB]
+    assert esp32.led_modes[-2:] == ["speech", "listen"]
+    assert esp32.leds[-2:] == [(255, 255, 255), LISTENING_LED_RGB]
 
 
 @pytest.mark.asyncio
@@ -2416,7 +2426,10 @@ async def test_say_lights_go_speaking_flash_then_dim_without_turning_off(monkeyp
     await _speak_text_with_reply(proxy, listen_after=True)
     await asyncio.wait_for(asyncio.gather(*list(proxy._tts_tasks)), 1)
 
-    assert esp32.leds == [(0, 80, 180), WAKE_FLASH_LED_RGB, LISTENING_LED_RGB]
+    assert "speech" in esp32.led_modes
+    assert esp32.led_modes[-2:] == ["listen", "listen"]
+    assert esp32.leds[-2:] == [WAKE_FLASH_LED_RGB, LISTENING_LED_RGB]
+    assert (0, 80, 180) not in esp32.leds
     assert _tts_starts(sent) == 2
 
 
@@ -2432,4 +2445,8 @@ async def test_say_without_a_window_still_turns_the_speaking_light_off(monkeypat
     await _speak_text_with_reply(proxy, listen_after=True)
     await asyncio.wait_for(asyncio.gather(*list(proxy._tts_tasks)), 1)
 
-    assert esp32.leds == [(0, 80, 180), (0, 0, 0)]
+    assert esp32.led_modes[0] == "off"
+    assert "speech" in esp32.led_modes
+    assert esp32.led_modes[-1] == "off"
+    assert esp32.leds[-1] == (0, 0, 0)
+    assert (0, 80, 180) not in esp32.leds

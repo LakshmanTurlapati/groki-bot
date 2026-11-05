@@ -154,10 +154,9 @@ class Gateway:
             usb_transport=self.usb_transport,
             on_face_detected=self._notify_face_detected,
             on_auto_head_command=self.idle_gate.notify_auto_head_command,
-            # Mac-camera tracking holds still while the robot speaks or listens;
-            # robot-camera tracking is gated by _desired_tracking_mode instead.
-            is_tts_active=lambda: get_debug_status().tts_active,
-            is_listening=self._is_listening,
+            # Both camera sources follow during assistant speech and silence.
+            # They hold only while the wake gate reports the user talking.
+            is_user_speaking=self._user_speaking,
         )
         # The face tracker runs as long as the gateway does; head follow is on
         # by default and "look at me" / "stop looking" toggle it.
@@ -196,9 +195,9 @@ class Gateway:
                               else self.face_tracker.available),
             "last_face_at": self._last_face_at,
             "head_follow": self.tracking_bridge.enabled,
-            # idle: following; working: the robot is speaking; quiet: it is
-            # listening after the wake word. Mac-camera tracking holds still in
-            # both; for the robot camera see pause_reason.
+            # idle: following, including while the robot speaks or waits in
+            # silence. quiet: the user is talking and the head holds. Robot
+            # camera pause reasons are in pause_reason.
             "mode": self.tracking_bridge.mode,
         }
         if self.tracking_source == "robot":
@@ -257,10 +256,45 @@ class Gateway:
         if self.tracking_source == "robot":
             await self.face_tracker.invalidate()
             await self._sync_tracking_mode()
+        await self._republish_status_lights()
+
+    async def _republish_status_lights(self) -> None:
+        proxy = self._active_voice_proxy()
+        publish = getattr(proxy, "publish_lights", None)
+        if not callable(publish):
+            return
+        try:
+            result = publish()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("status LED republish failed", exc_info=True)
 
     async def _tracking_tts_changed(self, connection) -> None:
         if self.esp32.connection is connection:
             await self._sync_tracking_mode(require_delivery=get_debug_status().tts_active)
+
+    def _on_user_speech(self, speaking: bool) -> None:
+        """Pause as soon as the user is heard, and resume when the hangover ends."""
+        previous = getattr(self, "_user_speech_task", None)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._user_speech_task = asyncio.create_task(
+            self._follow_user_speech(speaking), name="user-speech-tracking"
+        )
+
+    async def _follow_user_speech(self, speaking: bool) -> None:
+        await self._sync_tracking_mode()
+        if not speaking:
+            return
+        while self._user_speaking():
+            gate = getattr(self._active_voice_proxy(), "_wake_gate", None)
+            until = getattr(gate, "speech_until", None)
+            delay = 0.05
+            if until is not None:
+                delay = max(0.01, min(0.2, until - time.monotonic()))
+            await asyncio.sleep(delay)
+        await self._sync_tracking_mode()
 
     async def _on_conversation_activity(self, proxy, active: bool) -> None:
         if self._active_voice_proxy() is not proxy:
@@ -402,6 +436,7 @@ class Gateway:
                 set_face_tracking=self._set_face_tracking_from_voice,
                 on_conversation_activity=lambda active: self._on_conversation_activity(proxy, active),
             )
+            proxy.on_user_speech = self._on_user_speech
             return proxy
         if backend == "xiaozhi":
             return CloudProxy(voice_bridge=self.voice_input_bridge)
@@ -418,6 +453,7 @@ class Gateway:
             set_face_tracking=self._set_face_tracking_from_voice,
             on_conversation_activity=lambda active: self._on_conversation_activity(proxy, active),
         )
+        proxy.on_user_speech = self._on_user_speech
         return proxy
 
     def _peer_is_loopback(self, remote: str | None) -> bool:
@@ -678,29 +714,19 @@ class Gateway:
             self.demo_reactions.spawn_touch_reaction()
 
     async def _run_wake_response(self) -> None:
-        """Wake word response: head and blue LED in parallel.
+        """Center the head when the wake word is heard.
 
-        TTS removed (fix-gemini-one-round): speaking out a wake greeting via
-        edge-tts opens AudioOut on the device, which mutes the microphone for
-        the duration of the playback. The user's first sentence after the
-        wake word would be silently dropped. We rely on Gemini Live's own
-        audio reply to acknowledge the wake.
+        The voice proxy owns the LEDs (flash, then dim white). A second blue
+        write here used to land after that flash and leave the ring blue.
+        TTS is not played: a wake greeting would mute the microphone and drop
+        the user's first sentence.
         """
-        await asyncio.gather(
-            self._set_wake_head(),
-            self._set_wake_led_blue(),
-        )
+        await self._set_wake_head()
 
     async def _set_wake_head(self) -> None:
         await self._call_visual_tool(
             "self.robot.set_head_angles",
             {"yaw": 0, "pitch": 0, "speed": 700},
-        )
-
-    async def _set_wake_led_blue(self) -> None:
-        await self._call_visual_tool(
-            "self.led.set_all",
-            {"r": 0, "g": 100, "b": 255},
         )
 
     async def _handle_end_conversation(self) -> dict[str, bool]:
@@ -713,6 +739,18 @@ class Gateway:
         return {"ok": True}
 
     async def _set_conversation_led_off(self) -> None:
+        send_led = getattr(self.esp32, "send_led", None)
+        if callable(send_led):
+            try:
+                try:
+                    _result, error = await send_led(0, 0, 0, mode="off", notify_activity=False)
+                except TypeError:
+                    _result, error = await send_led(0, 0, 0, notify_activity=False)
+            except Exception as exc:
+                logger.debug("conversation LED off failed: %s", exc)
+            else:
+                if not error:
+                    return
         await self._call_visual_tool(
             "self.led.set_all",
             {"r": 0, "g": 0, "b": 0},
@@ -778,6 +816,12 @@ class Gateway:
             with suppress(asyncio.CancelledError):
                 await self._tracking_sync_task
             self._tracking_sync_task = None
+        speech_task = getattr(self, "_user_speech_task", None)
+        if speech_task is not None and not speech_task.done():
+            speech_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await speech_task
+            self._user_speech_task = None
         connection = self.esp32.connection
         if self.tracking_source == "robot" and connection is not None and getattr(connection, "camera_tracking_v1", False):
             with suppress(ConnectionError, OSError, asyncio.TimeoutError):

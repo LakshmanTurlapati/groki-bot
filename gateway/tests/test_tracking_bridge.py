@@ -88,47 +88,51 @@ async def test_tracking_ignores_low_confidence_and_working_mode():
 
 
 @pytest.mark.asyncio
-async def test_live_voice_states_pause_tracking_and_resume_head_writes():
+async def test_only_user_speech_pauses_tracking():
     esp32 = FakeESP32()
-    voice = {"tts": False, "listening": False}
+    voice = {"user": False, "tts": False, "listening": False}
     bridge = TrackingBridge(
         esp32,
         config=TrackingConfig(smoothing=1.0, move_threshold=0.0),
         is_tts_active=lambda: voice["tts"],
         is_listening=lambda: voice["listening"],
+        is_user_speaking=lambda: voice["user"],
     )
     detection = {"x": 0.8, "y": 0.5, "confidence": 0.9}
     try:
         voice["tts"] = True
-        assert bridge.mode == "working"
-        assert await bridge.handle_detection(detection) is False
-        voice["tts"] = False
         voice["listening"] = True
-        assert bridge.mode == "quiet"
-        assert await bridge.handle_detection(detection) is False
-        assert esp32.calls == []
-        voice["listening"] = False
         assert bridge.mode == "idle"
         assert await bridge.handle_detection(detection) is True
         await pump_resampler(bridge)
         assert len(esp32.calls) == 1
+        voice["user"] = True
+        assert bridge.mode == "quiet"
+        assert await bridge.handle_detection(detection) is False
+        voice["user"] = False
+        voice["tts"] = False
+        voice["listening"] = False
+        assert bridge.mode == "idle"
     finally:
         await bridge.stop()
 
 
 @pytest.mark.asyncio
-async def test_active_resampler_stops_writing_when_speech_begins():
+async def test_active_resampler_stops_writing_when_the_user_speaks():
     esp32 = FakeESP32()
-    voice = {"tts": False}
+    voice = {"user": False}
     bridge = TrackingBridge(
         esp32, config=TrackingConfig(smoothing=1.0, move_threshold=0.0),
-        is_tts_active=lambda: voice["tts"],
+        is_user_speaking=lambda: voice["user"],
     )
     try:
         assert await bridge.handle_detection({"x": 0.8, "y": 0.5, "confidence": 0.9})
-        voice["tts"] = True
+        voice["user"] = True
         await pump_resampler(bridge)
-        assert esp32.calls == []
+        held = len(esp32.calls)
+        voice["user"] = False
+        await pump_resampler(bridge)
+        assert len(esp32.calls) == held + 1
     finally:
         await bridge.stop()
 

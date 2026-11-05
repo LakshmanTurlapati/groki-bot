@@ -39,7 +39,9 @@ target_compile_options(groki_motion_test_spring PRIVATE -Wall -Wextra)
 add_test(NAME spring COMMAND groki_motion_test_spring)
 
 add_executable(groki_motion_test_led_runtime test_led_runtime.cpp)
-target_include_directories(groki_motion_test_led_runtime PRIVATE ${REPO_ROOT}/main)
+target_include_directories(groki_motion_test_led_runtime PRIVATE
+    ${REPO_ROOT}/main
+    ${REPO_ROOT}/components/conversation/include)
 target_compile_options(groki_motion_test_led_runtime PRIVATE -Wall -Wextra)
 add_test(NAME led_runtime COMMAND groki_motion_test_led_runtime)
 

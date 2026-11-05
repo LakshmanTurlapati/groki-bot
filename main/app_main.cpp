@@ -576,9 +576,8 @@ extern "C" void app_main()
         g_state->set_lt_config(cfg.lt_config_json);
     }
     g_state->battery.gauge_enabled.store(cfg.battery_gauge_enabled, std::memory_order_relaxed);
-    // LED state: replay the persisted values so the strip lights up the same
-    // way it did before the reboot. NVS-missing → DeviceConfig's struct
-    // defaults (gradient @ ~10%) so a fresh-install device still glows.
+    // LED settings are still restored for the settings page. The strip itself
+    // stays off until a voice listen/speech phase arrives (see led_task).
     g_state->led.mode.store(cfg.led_mode, std::memory_order_relaxed);
     g_state->led.color.store(cfg.led_color, std::memory_order_relaxed);
     g_state->led.brightness.store(cfg.led_brightness, std::memory_order_relaxed);

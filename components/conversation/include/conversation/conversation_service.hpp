@@ -126,6 +126,8 @@ struct ConversationEvent {
     std::uint8_t led_r{0};
     std::uint8_t led_g{0};
     std::uint8_t led_b{0};
+    // led_control::LedWire. 0 = ignore (do not change the strip).
+    std::uint8_t led_command{0};
     float head_yaw{0};
     float head_pitch{0};
     std::uint16_t head_speed{0};

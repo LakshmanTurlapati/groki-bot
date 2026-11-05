@@ -21,8 +21,10 @@ Tools: `xcode-select --install`).
 
 ```bash
 cd tools/vision-tracker
-swift build -c release
+./build-release.sh
 ```
+
+`build-release.sh` is the same `swift build -c release`. It only runs on macOS. The binary is not in git; a checkout on the Mac that runs the gateway has to build it once. A missing binary logs `face tracker unavailable` / `detector_missing` and the head does not follow.
 
 The executable is `tools/vision-tracker/.build/release/groki-vision-tracker`.
 The gateway starts it from there on its own.

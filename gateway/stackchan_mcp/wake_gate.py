@@ -5,14 +5,15 @@ configured wake word is detected, audio is only consumed locally; after a
 wake the gate opens a bounded listening window and returns the PCM frames
 that may be forwarded to Gemini Live.
 
-Who may set the LEDs (together with gemini_live_bridge / gemini_voice_proxy):
+Who may set the LEDs (the proxy's LedStatus is the only writer):
 
-* LISTENING: the proxy lights the listening cyan (0,180,180) on wake; the
-  bridge's set_all_leds is deferred.
-* TTS active: proxy._begin_tts lights the speaking blue (0,80,180); closing
-  the gate must not turn it off; the bridge's set_all_leds is deferred.
-* DORMANT: the gateway holds no status light, so idle behaviour and the
-  model's set_all_leds may write normally.
+* Voice chat open: dim white while listening, including silence. The model's
+  set_all_leds is deferred.
+* Assistant playback: pulsing white. Closing the gate or a model colour must
+  not replace it until playback ends.
+* DORMANT / error / disconnect: the strip is off. Loud frames while the
+  assistant is playing, and a short guard after it stops, are not the user
+  talking — speaker bleed must not pause head tracking.
 """
 
 from __future__ import annotations
@@ -76,6 +77,9 @@ DEFAULT_USER_SPEECH_HANGOVER_S = 0.8
 DEFAULT_KWS_RESET_INTERVAL_S = 60.0
 DEFAULT_KWS_RESET_DEFER_MAX_S = 15.0
 DEFAULT_TTS_STUCK_MAX_S = 300.0
+# After assistant playback, ignore this much microphone energy so speaker
+# bleed is not reported as the user talking.
+DEFAULT_PLAYBACK_ECHO_GUARD_S = 0.30
 # Activation flashes bright white; an open listening window then stays dim white.
 WAKE_FLASH_LED_RGB = (255, 255, 255)
 LISTENING_LED_RGB = (40, 40, 40)
@@ -239,6 +243,7 @@ class WakeGate:
     user_speech_onset_s: float = DEFAULT_USER_SPEECH_ONSET_S
     user_speech_hangover_s: float = DEFAULT_USER_SPEECH_HANGOVER_S
     is_tts_active: Callable[[], bool] = field(default=lambda: False)
+    playback_echo_guard_s: float = DEFAULT_PLAYBACK_ECHO_GUARD_S
     clock: Callable[[], float] = time.monotonic
     state: WakeGateState = WakeGateState.DORMANT
     _preroll: deque[bytes] = field(default_factory=deque, init=False)
@@ -252,6 +257,7 @@ class WakeGate:
     _listening_window_anchor: float | None = field(default=None, init=False)
     _kws_reset_due_since: float | None = field(default=None, init=False)
     _tts_stuck_latched: bool = field(default=False, init=False)
+    _echo_ignore_until: float | None = field(default=None, init=False)
 
     @property
     def available(self) -> bool:
@@ -288,7 +294,15 @@ class WakeGate:
             return WakeGateResult()
 
         now = self.clock()
+        was_playing = self._tts_active_since is not None
         self._track_tts_activity(now)
+        playing = self._is_tts_active(now)
+        if was_playing and not playing:
+            # Playback just ended. The next frames can be the speaker tail.
+            self._echo_ignore_until = now + max(0.0, self.playback_echo_guard_s)
+            self._voiced_since = None
+        if playing:
+            self._voiced_since = None
         closed = False
         if self.is_listening and (
             self._is_idle(now) or self._is_past_max_listening_window(now)
@@ -310,7 +324,13 @@ class WakeGate:
             self._clear_preroll()
             return WakeGateResult(forward_pcm=forward, woke=True, closed=closed)
 
-        if pcm_rms_int16(pcm_16khz) >= self.activity_rms_threshold:
+        # Assistant playback and the short tail after it are not the user.
+        # Silence in an open window is not the user either: only sustained
+        # energy outside those intervals counts.
+        echo = self._echo_ignore_until is not None and now < self._echo_ignore_until
+        if playing or echo:
+            self._voiced_since = None
+        elif pcm_rms_int16(pcm_16khz) >= self.activity_rms_threshold:
             self._last_voice_at = now
             if self._voiced_since is None:
                 self._voiced_since = now
