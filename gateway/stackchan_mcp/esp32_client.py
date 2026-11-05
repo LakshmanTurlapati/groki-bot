@@ -194,8 +194,12 @@ class ESP32Connection:
         await self._ws_send(json.dumps(message, ensure_ascii=False))
         return {"ok": True, "emotion": emotion}
 
-    async def send_led(self, r: int, g: int, b: int) -> dict[str, Any]:
-        """Send a XiaoZhi ``led`` message over the live WebSocket."""
+    async def send_led(self, r: int, g: int, b: int, mode: str | None = None) -> dict[str, Any]:
+        """Send a XiaoZhi ``led`` message over the live WebSocket.
+
+        ``mode`` is ``off``, ``listen``, or ``speech``. Omitted mode keeps the
+        legacy solid-colour frame.
+        """
         if not self._connected:
             raise ConnectionError("ESP32 not connected")
         message = {
@@ -204,8 +208,13 @@ class ESP32Connection:
             "g": max(0, min(255, int(g))),
             "b": max(0, min(255, int(b))),
         }
+        if mode in {"off", "listen", "speech"}:
+            message["mode"] = mode
         await self._ws_send(json.dumps(message))
-        return {"ok": True, "r": message["r"], "g": message["g"], "b": message["b"]}
+        result = {"ok": True, "r": message["r"], "g": message["g"], "b": message["b"]}
+        if "mode" in message:
+            result["mode"] = message["mode"]
+        return result
 
     async def send_head(self, yaw: int, pitch: int, speed: int) -> dict[str, Any]:
         """Send a XiaoZhi ``head`` message over the live WebSocket."""
@@ -1126,6 +1135,7 @@ class ESP32Manager:
         g: int,
         b: int,
         *,
+        mode: str | None = None,
         notify_activity: bool = True,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Send a non-MCP LED update to the connected device."""
@@ -1134,7 +1144,7 @@ class ESP32Manager:
         if notify_activity and self.on_activity is not None:
             self.on_activity()
         try:
-            return await self._connection.send_led(r, g, b), None
+            return await self._connection.send_led(r, g, b, mode=mode), None
         except Exception as exc:
             return None, {"code": -32000, "message": str(exc)}
 

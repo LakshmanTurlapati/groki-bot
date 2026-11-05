@@ -1036,13 +1036,14 @@ class VoiceToolExecutor:
             return await self._extension_routes[name].dispatch(name, args)
         if name == "end_conversation":
             return await self._dispatch_end_conversation()
-        if name == "set_all_leds" and self._should_defer_set_all_leds():
+        led_defer = self._led_defer_reason() if name == "set_all_leds" else None
+        if led_defer is not None:
             logger.info(
-                "Gemini Live set_all_leds deferred: wake_gate_state=%s args=%s",
-                WakeGateState.LISTENING.value,
+                "Gemini Live set_all_leds deferred: reason=%s args=%s",
+                led_defer,
                 self._summarize_tool_args(args),
             )
-            return {"ok": True, "deferred": "listening_status_light_active"}
+            return {"ok": True, "deferred": led_defer}
         if name == "express_emotion":
             return await self._dispatch_express_emotion(args)
         if name == "ask_grokbot":
@@ -1156,19 +1157,29 @@ class VoiceToolExecutor:
             },
         }
 
-    def _should_defer_set_all_leds(self) -> bool:
-        # The speaking blue and the listening cyan are owned by the proxy; the model must not override them.
+    def _led_defer_reason(self) -> str | None:
+        """Why a model colour must not be written, or None when it may.
+
+        Speech white and an open chat own the strip. With the voice policy
+        installed, idle is held off too, so a model colour cannot light it.
+        """
         if self._status.tts_active:
-            return True
+            return "speaking_status_light_active"
+        listening = False
         getter = self._wake_gate_state_getter
-        if getter is None:
-            return False
-        try:
-            state = getter()
-        except Exception:
-            logger.debug("wake gate state getter failed; allowing set_all_leds")
-            return False
-        return state == WakeGateState.LISTENING.value
+        if getter is not None:
+            try:
+                listening = getter() == WakeGateState.LISTENING.value
+            except Exception:
+                logger.debug("wake gate state getter failed; not treating the window as open")
+        if listening:
+            return "listening_status_light_active"
+        if getattr(self, "_leds_exclusive", False):
+            return "idle_leds_held_off"
+        return None
+
+    def _should_defer_set_all_leds(self) -> bool:
+        return self._led_defer_reason() is not None
 
     async def _dispatch_device_led(self, rgb: dict[str, int]) -> dict[str, Any]:
         send_led = getattr(self._esp32, "send_led", None)

@@ -707,6 +707,51 @@ def test_short_noise_is_not_talking_but_keeps_the_window_open() -> None:
     assert gate._last_voice_at == clock.now
 
 
+def test_playback_energy_and_its_tail_are_not_the_user() -> None:
+    """Speaker bleed must not pause tracking, and real speech still does."""
+    clock = FakeClock()
+    playing = [True]
+    gate = WakeGate(
+        kws=FakeKeywordSpotter([True]),
+        clock=clock,
+        activity_rms_threshold=500.0,
+        playback_echo_guard_s=0.3,
+        is_tts_active=lambda: playing[0],
+    )
+    gate.process(_pcm(2000))
+    clock.advance(gate.user_speech_hangover_s + 0.05)
+    assert gate.is_listening
+    assert gate.user_speaking is False
+
+    for _ in range(8):
+        gate.process(_pcm(3000))
+        clock.advance(0.05)
+    assert gate.user_speaking is False
+
+    playing[0] = False
+    for _ in range(6):
+        gate.process(_pcm(3000))
+        clock.advance(0.04)
+    assert gate.user_speaking is False
+
+    clock.advance(0.2)
+    for _ in range(6):
+        gate.process(_pcm(3000))
+        clock.advance(0.05)
+    assert gate.user_speaking is True
+
+
+def test_silence_in_an_open_window_is_not_the_user() -> None:
+    clock = FakeClock()
+    gate = WakeGate(kws=FakeKeywordSpotter(), clock=clock, activity_rms_threshold=500.0)
+    assert gate.open() is True
+    for _ in range(10):
+        gate.process(_pcm(0))
+        clock.advance(0.1)
+    assert gate.is_listening
+    assert gate.user_speaking is False
+
+
 def test_window_timers_are_not_talking() -> None:
     clock = FakeClock()
     tts = [True]

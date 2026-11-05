@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -96,6 +97,33 @@ async def test_tracking_runs_through_a_conversation_and_pauses_for_the_user(gate
 
 
 @pytest.mark.asyncio
+async def test_user_speech_pauses_immediately_and_resumes_when_it_ends(gateway):
+    gw, conn, proxy, _ws, _status = gateway
+    conn.camera_tracking_engaged = True
+    proxy.conversation_active = True
+    await gw._tracking_connection_changed()
+    assert gw._robot_tracking_allowed()
+
+    class LiveProxy:
+        def __init__(self) -> None:
+            self.conversation_active = True
+            self._until = time.monotonic() + 0.08
+            self._wake_gate = SimpleNamespace(speech_until=self._until)
+
+        @property
+        def user_speaking(self) -> bool:
+            return time.monotonic() < self._until
+
+    live = LiveProxy()
+    gw.esp32._connection.cloud_proxy = live
+    task = asyncio.create_task(gw._follow_user_speech(True))
+    await asyncio.sleep(0)
+    assert not gw._robot_tracking_allowed()
+    await asyncio.wait_for(task, 1)
+    assert gw._robot_tracking_allowed()
+
+
+@pytest.mark.asyncio
 async def test_detection_is_dropped_once_the_user_speaks(gateway):
     gw, conn, proxy, ws, _ = gateway
     conn.camera_tracking_engaged = True
@@ -116,7 +144,7 @@ async def test_bot_speech_keeps_tracking_and_delivers_the_mode_first(gateway):
     ws.send.reset_mock()
     await gw.esp32.send_tts_state("start")
     assert gw._robot_tracking_allowed()
-    assert gw.tracking_bridge.mode == "working"
+    assert gw.tracking_bridge.mode == "idle"
     assert await gw.tracking_bridge.handle_robot_detection({"x": 0.8, "y": 0.5, "confidence": 1}, context_for(conn))
     await gw.esp32.send_tts_state("stop")
     messages = [json.loads(c.args[0]) for c in ws.send.call_args_list]

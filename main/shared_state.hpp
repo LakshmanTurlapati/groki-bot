@@ -315,18 +315,22 @@ public:
         // mode = 0: off, 1: solid, 2: breath (single-colour sine fade),
         //        3: gradient (rainbow cycle).
         // brightness: 0..255 master gain applied after mode → strip.
-        // Boot in gradient (rainbow) mode so the strip cycles through
-        // colours continuously — also keeps the I2C path well-exercised,
-        // which is the ongoing soak test for the refresh_leds()
-        // RMW-elimination fix (docs/known_issues.md §1).
-        // Default brightness ~10 % (26/255). The PY32 base ring sat at
-        // 96/255 (~37 %) which was fine through I²C; the GPIO9 nekomimi
-        // chain has the diodes much closer to the user's eye so the same
-        // gain reads as glare. Single u32 colour payload keeps the load
-        // lock-free (0x00RRGGBB).
-        std::atomic<std::uint8_t> mode{3}; // 3 = kModeGradient (rainbow)
-        std::atomic<std::uint32_t> color{0x00404040u}; // ignored by gradient
+        // Saved decorative mode (0 off, 1 solid, 2 breath, 3 gradient). The
+        // strip renderer no longer paints this while the voice-status policy
+        // is in force: idle is dark, and only listen / speech may light it.
+        // The tuple is still stored so a settings write round-trips.
+        std::atomic<std::uint8_t> mode{0};
+        std::atomic<std::uint32_t> color{0x00404040u};
         std::atomic<std::uint8_t> brightness{26};
+        // Gateway voice phase: 0 off, 1 listen, 2 speech. Default off so a
+        // boot, a lost session, and a chat that never opened stay dark even
+        // when NVS still holds a rainbow mode.
+        std::atomic<std::uint8_t> voice_phase{0};
+        // Listen colour, 0x00RRGGBB. Speech ignores this and pulses white.
+        std::atomic<std::uint32_t> voice_color{0x00282828u};
+        // Assistant audio is in the speaker. Holds speech white across a
+        // listen/off message that arrives before the buffer drains.
+        std::atomic<bool> playback_active{false};
         // Gradient (rainbow) revolution period in tenths of a second.
         // 60 = 6.0 s (the historical hardcoded value). led_task uses
         // (period_ds / 10) as the divisor on the hue ramp. Clamped to >= 1

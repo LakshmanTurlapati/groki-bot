@@ -665,6 +665,7 @@ private:
     void set_local(Local s)
     {
         local_ = s;
+        state_.led.playback_active.store(s == Local::Speaking, std::memory_order_relaxed);
         state_.conv.idle.store(s == Local::Listening, std::memory_order_relaxed);
         using avatar::VoiceState;
         VoiceState vs = VoiceState::Idle;
@@ -1138,6 +1139,8 @@ private:
             if (transport_error) {
                 ESP_LOGE(kTag, "transport error: %s — reconnecting", ev.text.c_str());
                 state_.set_balloon_text("连接错误", /*hold_ms=*/3000);
+                // A dropped link must not leave the speech pulse or listen light on.
+                state_.led.voice_phase.store(0, std::memory_order_relaxed);
                 recover_after_error();
             } else {
                 ESP_LOGW(kTag, "server error (non-fatal): %s", ev.text.c_str());
@@ -1158,13 +1161,24 @@ private:
             break; // Handled directly by the transport callback.
 
         case conv::ConversationEventType::LedColor: {
-            const auto solid = led_runtime::from_rgb(ev.led_r, ev.led_g, ev.led_b);
-            state_.led.color.store(solid.color, std::memory_order_relaxed);
-            // A XiaoZhi LED message is a temporary status light, not a user setting: only runtime state is
-            // written here; the next led_task tick drives the real Board::LedStrip. Nothing goes to NVS.
-            state_.led.mode.store(solid.mode, std::memory_order_relaxed);
-            state_.led.brightness.store(solid.brightness, std::memory_order_relaxed);
-            ESP_LOGI(kTag, "LED status light: r=%u g=%u b=%u",
+            using stackchan::conversation::led_control::LedWire;
+            const auto cmd = static_cast<LedWire>(ev.led_command);
+            // Runtime only — nothing is written to NVS. Ignore leaves the
+            // current voice phase alone so a foreign colour cannot replace
+            // speech white or turn the idle strip back on.
+            if (cmd == LedWire::Off) {
+                state_.led.voice_phase.store(0, std::memory_order_relaxed);
+            } else if (cmd == LedWire::Listen) {
+                const auto packed = led_runtime::from_rgb(ev.led_r, ev.led_g, ev.led_b);
+                state_.led.voice_color.store(packed.color, std::memory_order_relaxed);
+                state_.led.voice_phase.store(1, std::memory_order_relaxed);
+            } else if (cmd == LedWire::Speak) {
+                state_.led.voice_phase.store(2, std::memory_order_relaxed);
+            } else {
+                break;
+            }
+            ESP_LOGI(kTag, "LED voice phase: %u r=%u g=%u b=%u",
+                     static_cast<unsigned>(ev.led_command),
                      static_cast<unsigned>(ev.led_r),
                      static_cast<unsigned>(ev.led_g),
                      static_cast<unsigned>(ev.led_b));

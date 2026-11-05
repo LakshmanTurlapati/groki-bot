@@ -2,16 +2,17 @@
 
 # XiaoZhi LED 控制消息
 
-XiaoZhi WebSocket 的文本控制帧新增 `led` 类型，用来把底座 LED 切成一个纯色状态灯。
+XiaoZhi WebSocket 的文本控制帧用 `led` 类型表示语音状态灯。空闲时灯灭；听用户说话时为暗白色；Groki 说话时为白色脉动。
 
 ## 消息格式
 
 ```json
-{"type":"led","r":0,"g":180,"b":180}
+{"type":"led","mode":"speech"}
+{"type":"led","mode":"listen","r":40,"g":40,"b":40}
+{"type":"led","mode":"off"}
 ```
 
-- `type` 固定为 `led`。
-- `r`、`g`、`b` 必须同时存在，取值为 `0..255` 的整数。
-- 设备收到后把 `SharedState::led.mode` 设为纯色模式，把 `SharedState::led.color` 设为 `0x00RRGGBB`，并把亮度设为 `255`。
-- 这条消息只改变运行时状态，不写入 NVS；重启后仍使用设备设置页保存的 LED 配置。
-- 真正的硬件输出仍由 `main/led_task.cpp` 统一完成：`led_task` 读取 `SharedState`，再驱动 `Board::LedStrip`。
+- `mode` 为 `off`、`listen` 或 `speech`。`speech` 在设备上以白色脉动，固件有播放音量时跟着嘴型走。
+- 带 `mode` 时 `r`/`g`/`b` 可省略。`listen` 用它们做纯色。只有 `r`/`g`/`b` 且全为 0 的旧消息仍表示关闭。其它旧颜色会被忽略，避免残留的蓝色盖掉说话时的白灯，或在空闲时把灯点亮。
+- 消息只改运行状态，不写 NVS。空闲、睡眠、断开和结束对话时灯是灭的。
+- 硬件输出仍只在 `main/led_task.cpp`。

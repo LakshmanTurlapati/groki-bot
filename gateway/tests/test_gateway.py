@@ -237,11 +237,16 @@ async def test_gateway_voice_signal_arbitrates_tracking(monkeypatch):
     proxy._wake_gate = gate
     gw.esp32._connection = SimpleNamespace(cloud_proxy=proxy)
     assert gw.tracking_bridge.mode == "idle"
+    # An open window and assistant playback keep following. Only the user's voice holds the head.
     gate.state = WakeGateState.LISTENING
-    assert gw.tracking_bridge.mode == "quiet"
+    assert gw.tracking_bridge.mode == "idle"
     proxy._status.on_tts_state(True)
-    assert gw.tracking_bridge.mode == "working"
+    assert gw.tracking_bridge.mode == "idle"
     proxy._status.on_tts_state(False)
+    gate._last_speech_at = gate.clock()
+    assert gw.tracking_bridge.mode == "quiet"
+    gate._last_speech_at = None
+    assert gw.tracking_bridge.mode == "idle"
     gate.state = WakeGateState.DORMANT
     assert gw.tracking_bridge.mode == "idle"
 
@@ -270,9 +275,8 @@ async def test_xiaozhi_speech_pauses_detection_until_cloud_tts_stops(monkeypatch
     gw.esp32.call_tool = head
     detection = {"x": 0.8, "y": 0.5, "confidence": 0.9}
     await cloud._handle_cloud_json(json.dumps({"type": "tts", "state": "start"}))
-    assert gw.tracking_bridge.mode == "working"
-    assert await gw.tracking_bridge.handle_detection(detection) is False
-    assert calls == []
+    assert gw.tracking_bridge.mode == "idle"
+    assert await gw.tracking_bridge.handle_detection(detection) is True
     await cloud._handle_cloud_json(json.dumps({"type": "tts", "state": "stop"}))
     assert gw.tracking_bridge.mode == "idle"
     try:
@@ -311,9 +315,12 @@ async def test_local_say_state_pauses_detection_until_tts_stop(monkeypatch):
     gw.esp32.call_tool = head
     detection = {"x": 0.8, "y": 0.5, "confidence": 0.9}
     await gw.esp32.send_tts_state("start")  # orchestrator's say path
-    assert gw.tracking_bridge.mode == "working"
-    assert await gw.tracking_bridge.handle_detection(detection) is False
-    assert calls == []
+    assert gw.tracking_bridge.mode == "idle"
+    try:
+        assert await gw.tracking_bridge.handle_detection(detection) is True
+    finally:
+        await gw.tracking_bridge.stop()
+    gw.tracking_bridge._resample_task = None
     await gw.esp32.send_tts_state("stop")
     assert gw.tracking_bridge.mode == "idle"
     try:
@@ -838,35 +845,21 @@ def test_gateway_wires_wake_detected_callback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_wake_response_runs_head_and_led_concurrently(monkeypatch):
+async def test_wake_response_centers_the_head_and_leaves_leds_to_the_proxy(monkeypatch):
     monkeypatch.setenv("STACKCHAN_USB_DISABLE", "1")
     gw = Gateway()
-
-    started: set[str] = set()
-    release = asyncio.Event()
     calls: list[tuple[str, dict]] = []
-
-    def mark_started(name: str) -> None:
-        started.add(name)
-        if started == {"head", "led"}:
-            release.set()
 
     class FakeESP32:
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
-            if name == "self.robot.set_head_angles":
-                mark_started("head")
-            elif name == "self.led.set_all":
-                mark_started("led")
-            await asyncio.wait_for(release.wait(), timeout=1.0)
             return {"ok": True}, None
 
     gw.esp32 = FakeESP32()
 
-    await asyncio.wait_for(gw._run_wake_response(), timeout=1.0)
+    await gw._run_wake_response()
 
-    assert ("self.robot.set_head_angles", {"yaw": 0, "pitch": 0, "speed": 700}) in calls
-    assert ("self.led.set_all", {"r": 0, "g": 100, "b": 255}) in calls
+    assert calls == [("self.robot.set_head_angles", {"yaw": 0, "pitch": 0, "speed": 700})]
 
 
 @pytest.mark.asyncio

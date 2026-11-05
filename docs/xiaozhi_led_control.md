@@ -7,11 +7,12 @@ XiaoZhi WebSocket text control frames have an `led` type that switches the base 
 ## Message format
 
 ```json
-{"type":"led","r":0,"g":180,"b":180}
+{"type":"led","mode":"speech"}
+{"type":"led","mode":"listen","r":40,"g":40,"b":40}
+{"type":"led","mode":"off"}
 ```
 
-- `type` is always `led`.
-- `r`, `g` and `b` must all be present, as integers in `0..255`.
-- On receipt the device sets `SharedState::led.mode` to solid colour, `SharedState::led.color` to `0x00RRGGBB`, and the brightness to `255`.
-- The message changes runtime state only and is not written to NVS; after a reboot the LED settings saved on the device settings page apply again.
-- The hardware output is still done in one place, `main/led_task.cpp`: `led_task` reads `SharedState` and drives `Board::LedStrip`.
+- `mode` is `off`, `listen`, or `speech`. `speech` pulses white on the device and follows the speaker envelope when the firmware has one.
+- `r`, `g` and `b` are optional with `mode`. For `listen` they are the solid colour. A legacy frame with only `r`/`g`/`b` all zero still means off. Any other legacy colour is ignored, so a stale blue write cannot replace the speech pulse or light an idle robot.
+- The message changes runtime state only and is not written to NVS. Idle, sleep, disconnect, and a closed chat leave the strip off.
+- The hardware output is still done in one place, `main/led_task.cpp`.

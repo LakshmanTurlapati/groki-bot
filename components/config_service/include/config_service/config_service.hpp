@@ -191,7 +191,7 @@ struct DeviceConfig {
     // Nekomimi NeoPixel live state — applied to SharedState at boot and
     // refreshed on every BLE chr 0x20 / HTTP POST write. Defaults mirror
     // SharedState's fallbacks (gradient mode, ~10% brightness).
-    std::uint8_t led_mode = 3;          // 0=off, 1=solid, 2=breath, 3=gradient
+    std::uint8_t led_mode = 0;          // 0=off, 1=solid, 2=breath, 3=gradient
     std::uint32_t led_color = 0x00404040u;
     std::uint8_t led_brightness = 26;
     std::uint8_t led_gradient_period_ds = 60;  // 6.0 s default (legacy hardcode)

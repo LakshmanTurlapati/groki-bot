@@ -752,6 +752,22 @@ async def test_dispatch_set_all_leds_deferred_during_listening(caplog):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_set_all_leds_stays_off_when_voice_policy_owns_the_strip():
+    esp32 = FakeVoiceOnlyESP32()
+    bridge = GeminiLiveBridge(
+        esp32,
+        api_key="k",
+        wake_gate_state_getter=lambda: "DORMANT",
+    )
+    bridge._leds_exclusive = True
+
+    result = await bridge._dispatch_tool("set_all_leds", {"r": 255, "g": 0, "b": 0})
+
+    assert result == {"ok": True, "deferred": "idle_leds_held_off"}
+    assert esp32.leds == []
+
+
+@pytest.mark.asyncio
 async def test_dispatch_set_all_leds_passes_during_dormant():
     esp32 = FakeVoiceOnlyESP32()
     bridge = GeminiLiveBridge(
@@ -2117,7 +2133,7 @@ async def test_dispatch_set_all_leds_deferred_during_tts():
 
     result = await bridge._dispatch_tool("set_all_leds", {"r": 0, "g": 0, "b": 0})
 
-    assert result == {"ok": True, "deferred": "listening_status_light_active"}
+    assert result == {"ok": True, "deferred": "speaking_status_light_active"}
     assert esp32.leds == []
 
 
