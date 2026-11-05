@@ -45,7 +45,7 @@ from .mac_control import _MEDIA_NO_PLAYER, _media_player_script, _media_state_sc
 DEFAULT_BASE_URL = "http://127.0.0.1:8766"
 DEFAULT_TIMEOUT_S = 15.0
 TEXT_QA_PROMPT = "自检：现在几点"
-VOICE_WAKE_UTTERANCE = "Hi Grok. 自检测试"
+VOICE_WAKE_UTTERANCE = "Hey Grok. 自检测试"
 SAY_DEVICE_ENV = "STACKCHAN_E2E_SAY_DEVICE"
 MUSIC_PLAY_PROMPT = "帮我放首歌"
 MUSIC_PAUSE_PROMPT = "暂停音乐"

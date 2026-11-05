@@ -154,16 +154,20 @@ class Gateway:
             usb_transport=self.usb_transport,
             on_face_detected=self._notify_face_detected,
             on_auto_head_command=self.idle_gate.notify_auto_head_command,
-            # The head holds still while the robot speaks or listens.
+            # Mac-camera tracking holds still while the robot speaks or listens;
+            # robot-camera tracking is gated by _desired_tracking_mode instead.
             is_tts_active=lambda: get_debug_status().tts_active,
             is_listening=self._is_listening,
         )
         # The face tracker runs as long as the gateway does; head follow is on
         # by default and "look at me" / "stop looking" toggle it.
         self.tracking_bridge.enabled = head_follow_default_enabled()
+        # Servo moves share a power rail with the speaker: 0 holds the head for replies.
+        self._track_while_speaking = os.getenv("STACKCHAN_TRACK_WHILE_SPEAKING", "1").lower() in {"1", "true", "yes"}
         self.face_tracker = (
             RobotCameraTracker(self.esp32, on_detection=self._handle_robot_detection,
-                               tracking_allowed=self._robot_tracking_allowed)
+                               tracking_allowed=self._robot_tracking_allowed,
+                               is_speaking=lambda: get_debug_status().tts_active)
             if self.tracking_source == "robot" else FaceTrackerSupervisor()
         )
         self._last_face_at: float | None = None
@@ -193,21 +197,27 @@ class Gateway:
             "last_face_at": self._last_face_at,
             "head_follow": self.tracking_bridge.enabled,
             # idle: following; working: the robot is speaking; quiet: it is
-            # listening after the wake word. The head holds still in both.
+            # listening after the wake word. Mac-camera tracking holds still in
+            # both; for the robot camera see pause_reason.
             "mode": self.tracking_bridge.mode,
         }
         if self.tracking_source == "robot":
             status.update(self.face_tracker.status())
             status["pause_reason"] = (
                 "unsupported_voice_backend" if self.voice_backend == "xiaozhi" else
-                "conversation" if self._conversation_active() else
-                "head_follow_disabled" if not self.tracking_bridge.enabled else None
+                "user_speaking" if self._user_speaking() else
+                "conversation" if self._desired_tracking_mode() == "conversation" else
+                "head_follow_disabled" if not self.tracking_bridge.enabled else
+                "sleeping" if status.get("camera_state") == "sleeping" else None
             )
         return status
 
     def _is_listening(self) -> bool:
         proxy = self._active_voice_proxy()
         return bool(getattr(proxy, "is_listening", getattr(getattr(proxy, "_wake_gate", None), "is_listening", False)))
+
+    def _user_speaking(self) -> bool:
+        return bool(getattr(self._active_voice_proxy(), "user_speaking", False))
 
     def _conversation_active(self) -> bool:
         proxy = self._active_voice_proxy()
@@ -221,15 +231,21 @@ class Gateway:
     def _desired_tracking_mode(self) -> str:
         if self.tracking_source != "robot" or self._stopping or self.voice_backend == "xiaozhi":
             return "off"
-        if self._conversation_active():
-            return "conversation"
-        return "tracking" if self.tracking_bridge.enabled else "off"
+        if not self._conversation_active():
+            return "tracking" if self.tracking_bridge.enabled else "off"
+        follow = (
+            self.tracking_bridge.enabled and not self._user_speaking()
+            and getattr(self.esp32.connection, "camera_tracking_engaged", False)
+            and (self._track_while_speaking or not get_debug_status().tts_active)
+        )
+        return "engaged" if follow else "conversation"
 
     def _robot_tracking_allowed(self) -> bool:
         connection = self.esp32.connection
-        return (self._desired_tracking_mode() == "tracking" and connection is not None
+        mode = self._desired_tracking_mode()
+        return (mode in {"tracking", "engaged"} and connection is not None
                 and connection.connected and getattr(connection, "camera_tracking_v1", False)
-                and self._sent_tracking_mode == (connection, "tracking"))
+                and self._sent_tracking_mode == (connection, mode))
 
     async def _handle_robot_detection(self, face, context) -> None:
         if self._robot_tracking_allowed():
@@ -342,6 +358,8 @@ class Gateway:
         Reuses the existing GeminiVoiceProxy.speak_text path so a proactive
         notifier (e.g. a Claude Code Stop hook) can make the robot talk in its
         own voice instead of the separate Qwen3/VOICEVOX TTS used by ``say``.
+        Afterwards the robot listens for an answer without the wake word,
+        unless ``listen`` is ``false``.
         """
         text = str(arguments.get("text") or "").strip()
         if not text:
@@ -350,12 +368,15 @@ class Gateway:
         speak = getattr(proxy, "speak_text", None)
         if speak is None:
             return {"ok": False, "error": "no active gemini voice session"}
-        return await speak(
-            text,
-            session_id=str(arguments.get("session_id") or "hook-notify"),
-            prompt_audio_frames=[],
-            emotion=str(arguments.get("emotion")) if arguments.get("emotion") else None,
-        )
+        options = {
+            "session_id": str(arguments.get("session_id") or "hook-notify"),
+            "prompt_audio_frames": [],
+            "emotion": str(arguments.get("emotion")) if arguments.get("emotion") else None,
+        }
+        # The xiaozhi cloud proxy has no listening window to open.
+        if "listen_after" in inspect.signature(speak).parameters:
+            options["listen_after"] = arguments.get("listen", True) is not False
+        return await speak(text, **options)
 
     @property
     def voice_backend(self) -> str:
@@ -455,6 +476,18 @@ class Gateway:
             return web.json_response({"ok": False, "error": "invalid json"}, status=400)
         result = await self._gemini_say(body)
         return web.json_response(result, status=200 if result.get("ok") else 409)
+
+    async def _handle_conversation_end(self, request: web.Request) -> web.Response:
+        """Local-only: stop listening until the wake word is heard again."""
+        if not self._say_request_is_local(request):
+            return web.json_response({"ok": False, "error": "local only"}, status=403)
+        # Use the live proxy only: ending must never open a new voice session.
+        connection = getattr(self.esp32, "connection", None)
+        proxy = getattr(connection, "cloud_proxy", None) if connection is not None else None
+        end = getattr(proxy, "end_conversation", None)
+        if end is None:
+            return web.json_response({"ok": False, "error": "no active voice session"}, status=409)
+        return web.json_response({"ok": True, "was_listening": await end()})
 
     async def _ensure_speak_proxy(self):
         """Reuse the live voice proxy, or open a USB one when that is the link."""
@@ -563,6 +596,7 @@ class Gateway:
             inject_text_handler=self._inject_debug_text,
         )
         app.router.add_post("/say", self._handle_say)
+        app.router.add_post("/conversation/end", self._handle_conversation_end)
         app.router.add_post("/track", self._handle_track)
         app.router.add_post("/demo/intro", self._handle_demo_intro)
         app.router.add_get("/demo/intro", self._handle_demo_intro)

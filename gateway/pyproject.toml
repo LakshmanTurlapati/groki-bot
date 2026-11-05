@@ -1,7 +1,7 @@
 [project]
 name = "stackchan-mcp"
 version = "0.5.0"
-description = "Voice and MCP gateway for the Groki Bot desktop robot (M5Stack CoreS3): Gemini Live voice with a Hi Grok wake word, plus a stdio MCP server for Claude and other clients."
+description = "Voice and MCP gateway for the Groki Bot desktop robot (M5Stack CoreS3): Gemini Live voice with a Hey Grok wake word, plus a stdio MCP server for Claude and other clients."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

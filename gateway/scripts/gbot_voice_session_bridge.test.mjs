@@ -91,6 +91,24 @@ test('desktop opt-in admits native send and search scoped to active call while u
   } finally {await new Promise(r=>server.close(r));}
 });
 
+test('a new call replaces a stale one that never hung up, but a stale hang-up cannot end the new call', async () => {
+  const port = await freePort(); const presence=[];
+  const sandbox={callerAuthId:async()=> 'owner', presence:async(body)=>{presence.push([body.callId,body.isOnTheLine]);}};
+  const server=createBridge({port,agentId:'a',desktopEnabled:true,toolsEnabled:false,sandbox,rpc:async()=>({kind:1})});
+  await new Promise(r=>server.listen(port,'127.0.0.1',r));
+  const post=async(path,body)=>fetch(`http://127.0.0.1:${port}`+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  const tool={agentId:'a',name:'send_task',input:{request:'FAKE'},line:{theyJustTalked:false,newsOwed:false,receiptOwed:false,alreadySpokeThisTurn:false}};
+  try {
+    assert.equal((await post('/native/presence',{agentId:'a',callId:'old-call',isOnTheLine:true,acceptsOverheard:false})).status,200);
+    assert.equal((await post('/native/presence',{agentId:'a',callId:'new-call',isOnTheLine:true,acceptsOverheard:false})).status,200);
+    assert.deepEqual(presence,[['old-call',true],['old-call',false],['new-call',true]]);
+    assert.equal((await post('/tool',{...tool,callId:'old-call'})).status,403);
+    assert.equal((await post('/tool',{...tool,callId:'new-call'})).status,200);
+    assert.equal((await post('/native/presence',{agentId:'a',callId:'old-call',isOnTheLine:false,acceptsOverheard:false})).status,409);
+    assert.equal((await post('/tool',{...tool,callId:'new-call'})).status,200);
+  } finally {await new Promise(r=>server.close(r));}
+});
+
 test('server transcript stream drops replay and pre-connection entries and requires rebaseline after clear', async()=>{
   const {filterTranscriptFrame,NativeTranscriptClient}=await import('./gbot_voice_session_bridge.mjs');
   const context={agentId:'a',callId:'call-c',sessionId:'',authId:'owner',sinceMs:100,seen:new Set()};

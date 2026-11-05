@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -35,10 +36,20 @@ class WakeGateSnapshot:
 
     state: WakeGateState
     available: bool = True
+    speech_until: float | None = None
+
+    @classmethod
+    def of(cls, gate: WakeGate) -> WakeGateSnapshot:
+        # Speech only steers head tracking: a gate without it must still wake.
+        return cls(gate.state, speech_until=getattr(gate, "speech_until", None))
 
     @property
     def is_listening(self) -> bool:
         return self.state == WakeGateState.LISTENING
+
+    @property
+    def user_speaking(self) -> bool:
+        return self.speech_until is not None and time.monotonic() < self.speech_until
 
 
 class WakeGateRunner:
@@ -126,7 +137,7 @@ class WakeGateRunner:
             gate.is_tts_active = lambda: self._native_tts_active
             # Rebuilt streams start dormant and never replay the outage audio.
             gate.close()
-            return WakeGateSnapshot(gate.state)
+            return WakeGateSnapshot.of(gate)
         except Exception:
             self._dispose_native()
             raise
@@ -138,7 +149,7 @@ class WakeGateRunner:
         self._native_tts_active = tts_active
         try:
             decision = gate.process(pcm)
-            return decision, WakeGateSnapshot(gate.state)
+            return decision, WakeGateSnapshot.of(gate)
         except Exception:
             self._dispose_native()
             raise
@@ -149,7 +160,18 @@ class WakeGateRunner:
             raise WakeWordUnavailable("wake word model is not loaded")
         try:
             gate.close()
-            return WakeGateSnapshot(gate.state)
+            return WakeGateSnapshot.of(gate)
+        except Exception:
+            self._dispose_native()
+            raise
+
+    def _window_native(self, action: str) -> tuple[bool, WakeGateSnapshot]:
+        gate = self._native_gate
+        if gate is None:
+            raise WakeWordUnavailable("wake word model is not loaded")
+        try:
+            result = gate.open() if action == "open" else gate.extend()
+            return result, WakeGateSnapshot.of(gate)
         except Exception:
             self._dispose_native()
             raise
@@ -257,6 +279,38 @@ class WakeGateRunner:
                     self.snapshot = snapshot
                     self._changed()
             return was_listening and self._current(generation)
+
+    async def open(self) -> bool:
+        """Open the listening window without the wake word.
+
+        Returns True only when a dormant gate was opened; an open window only
+        has its timers restarted. A gate that is not READY stays closed:
+        passthrough needs no window, and an unavailable detector keeps the
+        microphone blocked.
+        """
+        return await self._window("open")
+
+    async def extend(self) -> bool:
+        """Restart the timers of an open window; never opens a dormant gate."""
+        return await self._window("extend")
+
+    async def _window(self, action: str) -> bool:
+        generation = self._generation
+        async with self._lock:
+            if not self._current(generation) or self.health != "READY":
+                return False
+            try:
+                result, snapshot = await self._run(self._window_native, action)
+            except Exception as exc:
+                if self._current(generation):
+                    self._failed(exc)
+                    self._ensure_recovery()
+                return False
+            if not self._current(generation):
+                return False
+            self.snapshot = snapshot
+            self._changed()
+            return result
 
     async def stop(self) -> None:
         self._running = False

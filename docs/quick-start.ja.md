@@ -8,7 +8,7 @@
 2. Mac にゲートウェイをインストール：本リポジトリを `git clone` し、`cd groki-bot/gateway`、`uv sync --all-extras`、`cp .env.example .env` を実行します。
 3. [Grok Bot ネイティブ音声の設定](#grok-bot-ネイティブ音声の設定) に従って、`gateway/.env` の 4 項目を設定します。
 4. 別のターミナルで [Grok Bot ネイティブ音声の設定](#grok-bot-ネイティブ音声の設定) の完全なコマンドを実行し、ログインヘルパーを常駐させます。
-5. [path 2](voice-backends.md#path-2-firmware--gateway) と同様にゲートウェイを起動し、BLE 設定ページでロボットの接続先を `ws://<コンピュータの LAN IP>:8765` に設定して、「Hi Grok」と話しかけます。
+5. [path 2](voice-backends.md#path-2-firmware--gateway) と同様にゲートウェイを起動し、BLE 設定ページでロボットの接続先を `ws://<コンピュータの LAN IP>:8765` に設定して、「Hey Grok」と話しかけます。
 
 デフォルトのバックエンドは Gemini のままです。`STACKCHAN_VOICE_BACKEND=gemini` を設定することでいつでも戻せます。その他の音声オプション（OpenAI Realtime、Gemini Live、`gbot` CLI によるタスク転送）は後述の [他の音声バックエンド](voice-backends.ja.md#他の音声バックエンド) を参照してください。
 
@@ -61,7 +61,7 @@ node scripts/gbot_voice_session_bridge.mjs
 curl http://127.0.0.1:18771/health
 ```
 
-ヘルパーが動いていれば `"ok": true` が返ります。この 2 つはバックエンドの選択とヘルパーの設定を確認するもので、ログインの有効性や音声接続の成功を保証しません。ロボットに「Hi Grok」と話しかけ、応答が聞こえることを確認してください。
+ヘルパーが動いていれば `"ok": true` が返ります。この 2 つはバックエンドの選択とヘルパーの設定を確認するもので、ログインの有効性や音声接続の成功を保証しません。ロボットに「Hey Grok」と話しかけ、応答が聞こえることを確認してください。
 
 Gemini に戻すには、`STACKCHAN_VOICE_BACKEND=gemini` に変更するかその行を削除し、有効な `GEMINI_API_KEY` を残してゲートウェイを再起動してください。別の起動コマンドやサービスの環境でも `gbot` を指定している場合は、そちらも変更してください。独立したログインヘルパーは自動終了しないため、不要になったらそのターミナルで終了してください。
 

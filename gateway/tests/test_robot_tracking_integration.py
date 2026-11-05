@@ -71,6 +71,93 @@ async def test_local_tts_pauses_before_start_envelope_and_resumes_after_stop(gat
 
 
 @pytest.mark.asyncio
+async def test_tracking_runs_through_a_conversation_and_pauses_for_the_user(gateway):
+    gw, conn, proxy, ws, _ = gateway
+    conn.camera_tracking_engaged = True
+    await gw._tracking_connection_changed()
+    proxy.conversation_active = True
+    await gw._on_conversation_activity(proxy, True)
+    assert gw._robot_tracking_allowed()
+    assert gw.face_tracking_status()["pause_reason"] is None
+
+    proxy.user_speaking = True
+    assert not gw._robot_tracking_allowed()  # Before the device has even heard about it.
+    await gw._sync_tracking_mode()
+    assert not gw._robot_tracking_allowed()
+    assert gw.face_tracking_status()["pause_reason"] == "user_speaking"
+
+    proxy.user_speaking = False
+    await gw._sync_tracking_mode()
+    assert gw._robot_tracking_allowed()
+    proxy.conversation_active = False
+    await gw._on_conversation_activity(proxy, False)
+    messages = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+    assert [m["mode"] for m in messages] == ["tracking", "engaged", "conversation", "engaged", "tracking"]
+
+
+@pytest.mark.asyncio
+async def test_detection_is_dropped_once_the_user_speaks(gateway):
+    gw, conn, proxy, ws, _ = gateway
+    conn.camera_tracking_engaged = True
+    proxy.conversation_active = True
+    await gw._tracking_connection_changed()
+    ctx = context_for(conn)
+    proxy.user_speaking = True
+    ws.send.reset_mock()
+    await gw._handle_robot_detection({"x": 1, "y": 1, "confidence": 1}, ctx)
+    ws.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bot_speech_keeps_tracking_and_delivers_the_mode_first(gateway):
+    gw, conn, _, ws, _ = gateway
+    conn.camera_tracking_engaged = True
+    await gw._tracking_connection_changed()
+    ws.send.reset_mock()
+    await gw.esp32.send_tts_state("start")
+    assert gw._robot_tracking_allowed()
+    assert gw.tracking_bridge.mode == "working"
+    assert await gw.tracking_bridge.handle_robot_detection({"x": 0.8, "y": 0.5, "confidence": 1}, context_for(conn))
+    await gw.esp32.send_tts_state("stop")
+    messages = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+    assert [(m["type"], m.get("mode", m.get("state"))) for m in messages if m["type"] != "head_track"] == [
+        ("head_tracking", "engaged"), ("tts", "start"),
+        ("tts", "stop"), ("head_tracking", "tracking"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_off_switch_holds_the_head_for_replies(gateway, monkeypatch):
+    gw, conn, _, ws, _ = gateway
+    monkeypatch.setenv("STACKCHAN_TRACK_WHILE_SPEAKING", "0")
+    assert Gateway()._track_while_speaking is False
+    gw._track_while_speaking = False
+    conn.camera_tracking_engaged = True
+    await gw._tracking_connection_changed()
+    ws.send.reset_mock()
+    await gw.esp32.send_tts_state("start")
+    assert not gw._robot_tracking_allowed()
+    assert json.loads(ws.send.call_args_list[0].args[0]) == {"type": "head_tracking", "mode": "conversation"}
+
+
+@pytest.mark.asyncio
+async def test_disabled_head_follow_stays_paused_during_a_conversation(gateway):
+    gw, conn, proxy, ws, _ = gateway
+    conn.camera_tracking_engaged = True
+    await gw.stop_face_tracking()
+    proxy.conversation_active = True
+    await gw._on_conversation_activity(proxy, True)
+    assert not gw._robot_tracking_allowed()
+    assert json.loads(ws.send.call_args.args[0])["mode"] == "conversation"
+
+
+def test_sleeping_robot_reports_why_tracking_stopped(gateway):
+    gw, *_ = gateway
+    gw.face_tracker._state = "sleeping"
+    assert gw.face_tracking_status()["pause_reason"] == "sleeping"
+
+
+@pytest.mark.asyncio
 async def test_old_proxy_cannot_unpause_current_conversation(gateway):
     gw, _, proxy, ws, _ = gateway
     proxy.conversation_active = True
@@ -129,7 +216,7 @@ async def test_robot_face_results_are_bounded_relative_corrections(gateway, face
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid", ["expired", "session", "connection", "conversation"])
+@pytest.mark.parametrize("invalid", ["expired", "session", "connection"])
 async def test_obsolete_detection_does_not_send(gateway, invalid):
     gw, conn, _, ws, _ = gateway
     ctx = context_for(conn)
@@ -137,10 +224,8 @@ async def test_obsolete_detection_does_not_send(gateway, invalid):
         ctx.deadline = 0
     elif invalid == "session":
         ctx.session_id = "old-session"
-    elif invalid == "connection":
-        ctx.connection = SimpleNamespace()
     else:
-        gw.tracking_bridge.mode = "quiet"
+        ctx.connection = SimpleNamespace()
     assert not await gw.tracking_bridge.handle_robot_detection({"x": 1, "y": 1, "confidence": 1}, ctx)
     ws.send.assert_not_called()
 
@@ -193,11 +278,13 @@ async def test_tracking_capability_comes_from_accepted_hello(monkeypatch, capabi
         async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
             await ws.send(json.dumps({"type": "hello", "features": {
                 "mcp": False, "camera_tracking_v1": capability, "camera_tracking_v2": True,
+                "camera_tracking_engaged_v1": True,
             }}))
             await asyncio.wait_for(ws.recv(), 1)
             await asyncio.wait_for(ready.wait(), 1)
             assert manager.connection.camera_tracking_v1 is expected
             assert manager.connection.camera_tracking_v2 is expected
+            assert manager.connection.camera_tracking_engaged is expected
             assert manager.connection.peer_host == "127.0.0.1"
     finally:
         await manager.stop()

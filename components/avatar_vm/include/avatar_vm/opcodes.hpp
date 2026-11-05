@@ -110,13 +110,15 @@ enum class Var : std::uint8_t {
     ExprHold2To = 0x23,
     ExprHold2Blend = 0x24,
     VarCount,
-    // aora eye-ring coordinate range: [RingBase, RingBase + kRingVarCount). Layout
-    // l0x,l0y..l47x,l47y,r0x..r47y (screen coordinates, interpolated in C++ every frame). The data comes
-    // from DrawContext::aora_ring; a null pointer reads 0.
-    RingBase = 0x25,
+    // Face-parameter window: [ParamBase, ParamBase + kParamVarCount). A
+    // C++ compositor fills these floats every frame (main/pill_face.hpp:
+    // segN_ax, segN_ay, segN_bx, segN_by, segN_r, segN_col) and the face
+    // bytecode reads them. The data comes from DrawContext::face_params; a
+    // null pointer reads 0.
+    ParamBase = 0x25,
 };
 
-inline constexpr std::uint8_t kRingVarCount = 192;
+inline constexpr std::uint8_t kParamVarCount = 192;
 
 // Const table tag bytes.
 enum class ConstTag : std::uint8_t {
@@ -143,6 +145,11 @@ enum class ExprValue : std::uint8_t {
     Dizzy = 12,
     Affection = 13,
     Bored = 14,
+    Working = 15,
+    Waiting = 16,
+    Blocked = 17,
+    Done = 18,
+    Failed = 19,
 };
 
 } // namespace stackchan::avatar_vm

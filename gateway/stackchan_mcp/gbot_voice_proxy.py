@@ -161,5 +161,6 @@ class GbotVoiceProxy(GeminiVoiceProxy):
             tool_executor=self.voice_tool_executor,
             tool_executor_factory=self.voice_tool_executor_factory,
             tool_extensions=self.voice_tool_extensions,
+            on_proactive_response=self._on_proactive_response,
             **kwargs,
         )

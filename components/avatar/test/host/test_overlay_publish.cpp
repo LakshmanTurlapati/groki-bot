@@ -69,6 +69,40 @@ int main() {
         CHECK(!st.clear_face_overlay_if(0));
     }
 
+    // Bot activity: one word carries state + TTL (100 ms units, rounded up,
+    // capped), a re-send of the same state is still a new word (keepalive),
+    // and a clear drops the valid bit. Every write counts as activity.
+    {
+        SharedState st;
+        const std::uint32_t before = st.face.activity_seq.load();
+        st.request_bot_activity(Expression::Working, 120'000);
+        const std::uint32_t first = st.face.activity_command.load();
+        CHECK((first & SharedState::kOverlayValidBit) != 0);
+        CHECK(((first >> 15) & 0xFF) == static_cast<std::uint32_t>(Expression::Working));
+        CHECK((first & 0x7FFFu) * SharedState::kActivityTtlUnitMs == 120'000u);
+        st.request_bot_activity(Expression::Working, 120'000);
+        CHECK(st.face.activity_command.load() != first);
+        st.request_bot_activity(Expression::Done, 0);
+        CHECK((st.face.activity_command.load() & 0x7FFFu) == 0u);
+        st.request_bot_activity(Expression::Waiting, 50);
+        CHECK((st.face.activity_command.load() & 0x7FFFu) == 1u);
+        st.request_bot_activity(Expression::Waiting, 0xFFFFFFFFu);
+        CHECK((st.face.activity_command.load() & 0x7FFFu) == SharedState::kOverlayHoldCapMs);
+        st.clear_bot_activity();
+        CHECK((st.face.activity_command.load() & SharedState::kOverlayValidBit) == 0);
+        CHECK(st.face.activity_seq.load() == before + 6);
+
+        // By name (gateway message / HTTP): known states publish, idle
+        // clears, unknown names change nothing.
+        CHECK(st.request_bot_activity(std::string_view{"blocked"}, 0));
+        const std::uint32_t blocked = st.face.activity_command.load();
+        CHECK(((blocked >> 15) & 0xFF) == static_cast<std::uint32_t>(Expression::Blocked));
+        CHECK(!st.request_bot_activity(std::string_view{"partying"}, 0));
+        CHECK(st.face.activity_command.load() == blocked);
+        CHECK(st.request_bot_activity(std::string_view{"idle"}, 0));
+        CHECK((st.face.activity_command.load() & SharedState::kOverlayValidBit) == 0);
+    }
+
     // A message (balloon) resets idle decay: activity_seq must bump.
     {
         SharedState st;

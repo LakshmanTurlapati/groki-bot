@@ -53,6 +53,6 @@ foreach(scenario IN ITEMS unsupported normal boot_recovery init_failure raw raw_
 endforeach()
 foreach(scenario IN ITEMS tracking_success tracking_paused tracking_pause_during tracking_failure tracking_timeout
         tracking_feedback_failure tracking_moved tracking_no_worker tracking_no_init tracking_no_servo tracking_finalize_timeout
-        tracking_transform tracking_motion tracking_motion_blur tracking_motion_manual)
+        tracking_transform tracking_motion tracking_motion_blur tracking_motion_manual tracking_sleeping)
     add_test(NAME camera_${scenario} COMMAND camera_service_test_1 ${scenario})
 endforeach()

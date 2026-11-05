@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "conversation/activity_control.hpp"
 #include "conversation/control_dispatch.hpp"
 #include "conversation/tracking_control.hpp"
 
@@ -145,7 +146,7 @@ void test_queue_holds_last_command_while_speaking()
 
 void test_tracking_controls() {
     using namespace stackchan::conversation;
-    for (const auto* mode : {"off", "tracking", "conversation"}) {
+    for (const auto* mode : {"off", "tracking", "conversation", "engaged"}) {
         const std::string json = std::string{"{\"mode\":\""} + mode + "\"}";
         auto* root = cJSON_Parse(json.c_str());
         CHECK(parse_head_tracking_mode(root).has_value());
@@ -183,6 +184,40 @@ void test_tracking_controls() {
 
 } // namespace
 
+void test_bot_activity()
+{
+    using stackchan::conversation::kMaxActivityTtlMs;
+    using stackchan::conversation::parse_bot_activity;
+    {
+        auto* root = cJSON_Parse(R"({"type":"activity","state":"working","ttl_ms":120000})");
+        const auto cmd = parse_bot_activity(root);
+        CHECK(cmd && cmd->state == "working" && cmd->ttl_ms == 120000u);
+        cJSON_Delete(root);
+    }
+    {
+        // ttl_ms is optional; 0 / negative / absent all mean "default".
+        for (const char* json : {R"({"state":"done"})", R"({"state":"done","ttl_ms":0})",
+                                 R"({"state":"done","ttl_ms":-5})", R"({"state":"done","ttl_ms":"9"})"}) {
+            auto* root = cJSON_Parse(json);
+            const auto cmd = parse_bot_activity(root);
+            CHECK(cmd && cmd->state == "done" && cmd->ttl_ms == 0u);
+            cJSON_Delete(root);
+        }
+    }
+    {
+        auto* root = cJSON_Parse(R"({"state":"waiting","ttl_ms":1e12})");
+        const auto cmd = parse_bot_activity(root);
+        CHECK(cmd && cmd->ttl_ms == kMaxActivityTtlMs);
+        cJSON_Delete(root);
+    }
+    for (const char* json : {R"({})", R"({"state":5})", R"({"state":""})",
+                             R"({"state":"a-name-that-is-far-too-long"})"}) {
+        auto* root = cJSON_Parse(json);
+        CHECK(!parse_bot_activity(root));
+        cJSON_Delete(root);
+    }
+}
+
 int main()
 {
     test_head_message_reaches_head_sink();
@@ -193,6 +228,7 @@ int main()
     test_malformed_json_and_missing_type();
     test_queue_holds_last_command_while_speaking();
     test_tracking_controls();
+    test_bot_activity();
     if (g_failures == 0) {
         std::printf("[ OK ] control_dispatch: %d checks passed\n", g_checks);
         return 0;

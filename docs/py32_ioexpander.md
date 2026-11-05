@@ -96,7 +96,7 @@ expander.digital_write(pin, false);   // 初期 Low
 | ピン | 用途 |
 |---|---|
 | `0` (`kPinServoPowerEnable`) | サーボ電源 EN (High = ON、200 ms 後にサーボ通信可能) |
-| `14` | WS2812 NeoPixel データ ライン (本体 12 個 + Hat の追加分)、PY32 内部で自動制御。ホスト側は § 7 の RAM/Refresh のみ操作 |
+| `13` (`kPinLedData`、基板表記 IO14) | WS2812 NeoPixel データ ライン (本体 12 個 = 左 0-5 / 右 6-11 + Hat の追加分)。PY32 が自動で駆動するが、**出力 / プルアップ / プッシュプル**に設定しておく必要がある (M5Stack StackChan BSP の `io_expander_init()` と同じ)。設定しないと LED は点灯しない。ホスト側は § 6 の RAM/Refresh を操作 |
 
 その他のピンは Stack-chan ベース上では未配線または用途不明。
 

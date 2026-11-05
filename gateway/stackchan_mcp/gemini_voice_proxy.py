@@ -44,7 +44,7 @@ from .edge_tts_provider import EdgeTTSProvider
 from .gemini_live_bridge import GeminiLiveBridge, manual_vad_enabled
 from .opus_codec import StackchanOpusCodec
 from .session_keepalive import SessionKeepalive, keepalive_interval_from_env
-from .wake_gate import LISTENING_LED_RGB, WakeGate, create_wake_gate_from_env
+from .wake_gate import LISTENING_LED_RGB, WAKE_FLASH_LED_RGB, WakeGate, create_wake_gate_from_env
 from .wake_gate_runner import WakeGateProcessError, WakeGateRunner, WakeGateSnapshot
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,10 @@ GEMINI_HELLO_MARKER = {"provider": "gemini_live"}
 WAKE_CHIME_DURATION_MS = 180
 WAKE_CHIME_FREQUENCY_HZ = 880.0
 WAKE_CHIME_SAMPLE_RATE = 24_000
+# LED and avatar calls over the USB MCP channel can sit on the microphone path.
+# The USB voice receive queue holds about 1.9 s of audio, so a status call must
+# give up well before that or the session overflows and restarts.
+USB_STATUS_TIMEOUT_S = 0.5
 
 
 def synthesize_wake_chime_pcm(
@@ -126,6 +130,12 @@ class GeminiVoiceProxy:
     _tts_generation: int = 0
     _speak_text_active: bool = False
     _speak_text_frames: int = 0
+    _chime_active: bool = False
+    # Open the listening window when the current speech ends (proactive speech).
+    _listen_after_tts: bool = False
+    # Bumped whenever the conversation is ended, so a window that is still
+    # opening can tell that it must close again.
+    _conversation_end_epoch: int = 0
     _tts_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     _ready_event: asyncio.Event = field(default_factory=asyncio.Event)
     _stopped: bool = False
@@ -212,6 +222,11 @@ class GeminiVoiceProxy:
         return bool(not self._stopped and self._wake_gate and self._wake_gate.is_listening)
 
     @property
+    def user_speaking(self) -> bool:
+        """The user is talking now; the microphone is off while the robot speaks."""
+        return bool(self.is_listening and not self._tts_active and self._wake_gate.user_speaking)
+
+    @property
     def wake_gate_state(self) -> str:
         runner = self._wake_runner
         return runner.state if runner is not None else "UNAVAILABLE"
@@ -224,7 +239,7 @@ class GeminiVoiceProxy:
         ))
 
     async def _notify_conversation_activity(self, *, required: bool = False) -> None:
-        """Finish the tracking pause before any conversation audio is sent."""
+        """Deliver the head tracking mode before any conversation audio is sent."""
         async with self._conversation_callback_lock:
             active = self.conversation_active
             if active == self._conversation_notified:
@@ -661,37 +676,102 @@ class GeminiVoiceProxy:
             return
         if decision.closed:
             await self._wake_window_closed(bridge)
-        if decision.woke:
-            try:
-                await self._notify_conversation_activity(required=True)
-            except asyncio.CancelledError:
-                if not self._stopped:
-                    await runner.close()
-                    await self._wake_window_closed(bridge)
-                raise
-            except Exception:
-                await runner.close()
-                await self._wake_window_closed(bridge)
-                return
-            if self._stopped or not self.is_listening:
-                return
-            self._status.on_wake_woke()
-            self._reported_dead = False
-            await self._signal_manual_vad_start(bridge)
-            await self._set_leds_safe(*LISTENING_LED_RGB)
-            await self._send_device_emotion_safe(WAKE_CONFIRM_EMOTION)
-            if self.wake_confirm_hold_s > 0:
-                await asyncio.sleep(self.wake_confirm_hold_s)
-            if self._stopped or not self.is_listening:
-                return
-            await self._send_device_emotion_safe(LISTENING_EMOTION)
-            self._signal_wake_chime()
+        if decision.woke and not await self._enter_listening(bridge, runner, woke=True):
+            return
         for chunk in decision.forward_pcm:
             if self._stopped or runner is not self._wake_runner:
                 return
             if not decision.bypassed and not self.is_listening:
                 return
             await bridge.send_audio(chunk)
+
+    async def _enter_listening(self, bridge: GeminiLiveBridge, runner: WakeGateRunner, *, woke: bool) -> bool:
+        """Update head tracking and show the listening cue for a newly opened window.
+
+        ``woke`` adds the wake confirmation face. A window opened after the
+        robot's own speech goes straight to the listening face and chime.
+        Returns False when the window closed in the meantime.
+        """
+        try:
+            await self._notify_conversation_activity(required=True)
+        except asyncio.CancelledError:
+            if not self._stopped:
+                await runner.close()
+                await self._wake_window_closed(bridge)
+            raise
+        except Exception:
+            await runner.close()
+            await self._wake_window_closed(bridge)
+            return False
+        if self._stopped or not self.is_listening:
+            return False
+        if woke:
+            self._status.on_wake_woke()
+        self._reported_dead = False
+        await self._signal_manual_vad_start(bridge)
+        # Bright white until the chime ends, then dim white while listening.
+        await self._set_leds_safe(*WAKE_FLASH_LED_RGB)
+        if woke:
+            await self._send_device_emotion_safe(WAKE_CONFIRM_EMOTION)
+            if self.wake_confirm_hold_s > 0:
+                await asyncio.sleep(self.wake_confirm_hold_s)
+            if self._stopped or not self.is_listening:
+                return False
+        await self._send_device_emotion_safe(LISTENING_EMOTION)
+        # The wake path already held the flash above; after speech, hold it in
+        # the chime task so the reply loop is not delayed.
+        self._signal_wake_chime(0.0 if woke else self.wake_confirm_hold_s)
+        return True
+
+    def _on_proactive_response(self) -> None:
+        """The model is answering a desktop result or typed message on its own."""
+        if not self.is_listening:
+            self._listen_after_tts = True
+
+    async def _after_tts_stop(self) -> None:
+        """Keep the listening window in step with the robot's speech.
+
+        The device microphone is off while it speaks, so the gate cannot see a
+        reply end: restart an open window's timers here. After proactive
+        speech (``/say`` or a desktop result) open the window, so the user can
+        answer without the wake word.
+        """
+        runner = self._wake_runner
+        listen_after, self._listen_after_tts = self._listen_after_tts, False
+        if self._stopped or runner is None:
+            return
+        if not self.is_listening and listen_after and await self._open_after_speech(runner):
+            return
+        if self.is_listening:
+            await runner.extend()
+        if listen_after:
+            # end_tts() left the light for the window that did not open.
+            self._signal_speaking_leds(*self._post_tts_led_rgb())
+
+    async def _open_after_speech(self, runner: WakeGateRunner) -> bool:
+        """Open the window after proactive speech. True when the LEDs were handled."""
+        bridge = self._bridge
+        if bridge is None:
+            return False
+        end_epoch = self._conversation_end_epoch
+        if not await runner.open():
+            return False
+        if self._stopped or runner is not self._wake_runner:
+            return True
+        if end_epoch != self._conversation_end_epoch:
+            # Ended while the window was opening: a goodbye must not reopen it.
+            if await runner.close():
+                await self._wake_window_closed(bridge)
+            return True
+        logger.info("listening for a reply after proactive speech")
+        await self._enter_listening(bridge, runner, woke=False)
+        return True
+
+    async def end_conversation(self) -> bool:
+        """Close the listening window on request. Returns whether it was open."""
+        was_listening = self.is_listening
+        await self._handle_bridge_end_conversation()
+        return was_listening
 
     async def _handle_session_dead(self) -> None:
         """Session reconnect exceeded the audio-cache TTL: close listening and report that the session could not be resumed."""
@@ -715,6 +795,8 @@ class GeminiVoiceProxy:
 
     async def _handle_bridge_end_conversation(self) -> None:
         """Close the wake window when Gemini explicitly ends the conversation."""
+        self._listen_after_tts = False
+        self._conversation_end_epoch += 1
         if self._stopped:
             return
         runner = self._wake_runner
@@ -745,13 +827,15 @@ class GeminiVoiceProxy:
         session_id: str,
         prompt_audio_frames: list[bytes],
         emotion: str | None = None,
+        listen_after: bool = False,
     ) -> dict[str, Any]:
         """Ask Gemini to speak ``text`` verbatim and stream the audio back.
 
         Same shape as CloudProxy.speak_text so the MCP ``say`` tool can call
         either backend through the same wrapper. ``prompt_audio_frames`` is
         ignored here — xiaozhi needed it for the listen/audio dance, Gemini
-        accepts text directly.
+        accepts text directly. ``listen_after`` opens the listening window
+        when the speech ends, so the user can answer without the wake word.
         """
         if not self.connected or self._bridge is None:
             return {
@@ -781,15 +865,18 @@ class GeminiVoiceProxy:
         generation = self._tts_generation
         self._speak_text_active = True
         self._speak_text_frames = 0
+        self._listen_after_tts = listen_after
         try:
             await self._notify_conversation_activity(required=True)
             await self._send_text_prompt(prompt)
         except asyncio.CancelledError:
             self._speak_text_active = False
+            self._listen_after_tts = False
             await self._notify_conversation_activity()
             raise
         except Exception as exc:
             self._speak_text_active = False
+            self._listen_after_tts = False
             await self._notify_conversation_activity()
             return {
                 "ok": False,
@@ -822,6 +909,9 @@ class GeminiVoiceProxy:
                 await self._notify_conversation_activity()
 
         frames_sent = self._speak_text_frames if generation == self._tts_generation else 0
+        if frames_sent == 0:
+            # Nothing was said, so there is nothing to answer.
+            self._listen_after_tts = False
         return {
             "ok": frames_sent > 0,
             "text": text,
@@ -1100,25 +1190,32 @@ class GeminiVoiceProxy:
         # Fire-and-forget for the same reason as the LED dispatch below.
         self._signal_speaking_avatar(self._speaking_avatar_face())
         # Light the base ring soft blue while Gemini speaks. Fire-and-forget so
-        # a slow / failing LED call never holds up the Opus stream.
-        self._signal_speaking_leds(0, 80, 180)
+        # a slow / failing LED call never holds up the Opus stream. The wake
+        # chime keeps the activation flash instead.
+        if not self._chime_active:
+            self._signal_speaking_leds(0, 80, 180)
         return True
 
-    def _signal_wake_chime(self) -> None:
+    def _signal_wake_chime(self, delay_s: float = 0.0) -> None:
         """Play the wake beep without blocking the listening window."""
         try:
-            task = asyncio.create_task(self._play_wake_chime())
+            task = asyncio.create_task(self._play_wake_chime(delay_s))
         except RuntimeError:
             return
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
-    async def _play_wake_chime(self) -> None:
+    async def _play_wake_chime(self, delay_s: float = 0.0) -> None:
         """Send a short beep through the existing TTS envelope and Opus frames.
 
         Failures are logged only. This path uses the same tts.start-to-first-frame
         delay as Gemini speech so firmware can leave Listening before audio lands.
+        ``delay_s`` holds the activation flash first, without blocking the caller.
         """
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
+            if self._stopped or not self.is_listening:
+                return
         if (
             self._tts_active
             or self._reported_dead
@@ -1126,11 +1223,16 @@ class GeminiVoiceProxy:
             or self._codec is None
         ):
             return
+        self._chime_active = True
         try:
             await self._handle_gemini_audio(synthesize_wake_chime_pcm())
+            # end_tts() dims the activation flash to the listening light.
             await self.end_tts()
         except Exception as exc:
             logger.warning("wake chime failed: %s", exc)
+            self._signal_speaking_leds(*self._post_tts_led_rgb())
+        finally:
+            self._chime_active = False
 
     def _signal_speaking_leds(self, r: int, g: int, b: int) -> None:
         """Schedule a non-blocking LED update. Failures are swallowed."""
@@ -1148,10 +1250,13 @@ class GeminiVoiceProxy:
         args = {"r": r, "g": g, "b": b}
         logger.info("status LED dispatch requested rgb=(%s,%s,%s)", r, g, b)
         usb = self.usb_transport
-        if usb is not None and getattr(usb, "connected", False):
+        if usb is not None and getattr(usb, "connected", False) and self._device_lacks_mcp():
+            # Its MCP tools never answer; waiting for them stalls microphone audio.
+            logger.info("status LED dispatch branch=usb skipped reason=no_mcp")
+        elif usb is not None and getattr(usb, "connected", False):
             logger.info("status LED dispatch branch=usb tool=self.led.set_all")
             try:
-                await usb.call_tool("self.led.set_all", args)
+                await usb.call_tool("self.led.set_all", args, timeout_s=USB_STATUS_TIMEOUT_S)
                 logger.info("status LED dispatch branch=usb ok")
                 return
             except Exception as exc:
@@ -1243,9 +1348,9 @@ class GeminiVoiceProxy:
         """USB-first, WS-fallback avatar dispatch. Never raises."""
         args = {"face": face}
         usb = self.usb_transport
-        if usb is not None and getattr(usb, "connected", False):
+        if usb is not None and getattr(usb, "connected", False) and not self._device_lacks_mcp():
             try:
-                await usb.call_tool("self.display.set_avatar", args)
+                await usb.call_tool("self.display.set_avatar", args, timeout_s=USB_STATUS_TIMEOUT_S)
                 return
             except Exception as exc:
                 logger.debug("avatar via USB failed: %s; trying WS", exc)
@@ -1259,6 +1364,14 @@ class GeminiVoiceProxy:
                     await esp32.call_tool("self.display.set_avatar", args)
             except Exception as exc:
                 logger.debug("avatar via WS failed: %s", exc)
+
+    def _device_lacks_mcp(self) -> bool:
+        """True when the connected firmware reported ``features.mcp=false``."""
+        try:
+            esp32 = self.esp32_ref() if self.esp32_ref is not None else None
+        except Exception:
+            return False
+        return esp32 is not None and not self._esp32_mcp_supported(esp32)
 
     @staticmethod
     def _esp32_mcp_supported(esp32: Any) -> bool:
@@ -1385,8 +1498,11 @@ class GeminiVoiceProxy:
             self._prebuffer_satisfied = False
             self._pcm_prebuffer.clear()
             self._signal_speaking_avatar("idle")
-            self._signal_speaking_leds(*self._post_tts_led_rgb())
+            if not self._listen_after_tts:
+                # A pending listening window sets its own activation light.
+                self._signal_speaking_leds(*self._post_tts_led_rgb())
             self._clear_turn_emotion_face()
+        await self._after_tts_stop()
         await self._notify_conversation_activity()
 
     async def _abort_in_flight_tts(self) -> None:
@@ -1400,6 +1516,8 @@ class GeminiVoiceProxy:
         """
         self._tts_generation += 1
         was_active = self._tts_active
+        # Speech cut short (touch, barge-in, reconnect) does not invite a reply.
+        self._listen_after_tts = False
         if self._codec is not None:
             self._codec.reset_encode_buffer()
         await self._cancel_tts_tasks()

@@ -208,7 +208,7 @@ class TrackingBridge:
     async def handle_robot_detection(self, face: dict[str, float] | None, context: Any) -> bool:
         """Correct image error relative to the firmware's measured capture pose."""
         if (
-            self.source != "robot" or not self.enabled or self.mode in {"working", "quiet"}
+            self.source != "robot" or not self.enabled
             or self.esp32.connection is not context.connection
             or context.connection.session_id != context.session_id
             or not context.connection.connected

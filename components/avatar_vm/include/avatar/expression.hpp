@@ -12,6 +12,8 @@ namespace stackchan::avatar {
 // move. The extended expressions occupy 6-12 (Idle is an alias of Neutral).
 // Affection is the stroke face (squinting smile). Bored is the idle-decay
 // look-around face (appended after them so 0-12 keep their values).
+// Working..Failed (15-19) are the Grok Bot run states the gateway reports
+// through the activity channel (see ExpressionController::set_activity).
 enum class Expression : std::uint8_t {
     Neutral = 0,
     Happy = 1,
@@ -28,9 +30,14 @@ enum class Expression : std::uint8_t {
     Dizzy = 12,
     Affection = 13,
     Bored = 14,
+    Working = 15,
+    Waiting = 16,
+    Blocked = 17,
+    Done = 18,
+    Failed = 19,
 };
 
-inline constexpr std::size_t kExpressionCount = static_cast<std::size_t>(Expression::Bored) + 1;
+inline constexpr std::size_t kExpressionCount = static_cast<std::size_t>(Expression::Failed) + 1;
 
 // Coarse voice / wait state written by the conversation task. The
 // expression controller maps Listening/Thinking onto persistent base

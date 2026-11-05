@@ -600,13 +600,13 @@ EMOTION_SYSTEM_INSTRUCTION = """## Expressing emotion
 
 You can hear the user's tone and mood in their voice. Before you start each spoken reply, call express_emotion(mood, intensity) once (at most once per turn), so the body reacts before the words.
 Examples: the user sounds tired → express_emotion(mood="tired", intensity="low"); the user is excited about some progress → express_emotion(mood="excited", intensity="high").
-This does not change when a conversation ends: call end_conversation only when the user clearly says goodbye or that they are done talking."""
+This does not change when a conversation ends: call end_conversation only when the user clearly says goodbye or that they are done talking, for example "bye Grok", "stop listening", "that's all" or "go to sleep". Say a short goodbye first."""
 
 
 VOICE_ONLY_SYSTEM_INSTRUCTION = """## Speak first
 
 In small talk, answer out loud right away.
-Call end_conversation only when the user clearly says goodbye or that they are done talking."""
+Call end_conversation only when the user clearly says goodbye or that they are done talking, for example "bye Grok", "stop listening", "that's all" or "go to sleep". Say a short goodbye first."""
 
 
 def grokbot_instruction(bot: str, *, mac_control: bool) -> str:

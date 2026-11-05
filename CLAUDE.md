@@ -36,7 +36,6 @@ Never let the gateway take the robot's serial port in tests or local runs: set `
   // SPDX-FileCopyrightText: 2026 Joseph Zhou
   // SPDX-License-Identifier: BSL-1.0
   ```
-- `main/aora_ring_data.hpp` and `main/aora_face.hpp` carry Emotion Ball data under a non-commercial license. See `third_party/emotion-ball/` and `THIRD_PARTY_NOTICES.md`.
 - Add every new third-party dependency to `THIRD_PARTY_NOTICES.md` and `docs/licenses.html`.
 
 ## Coding conventions
@@ -54,7 +53,7 @@ Never let the gateway take the robot's serial port in tests or local runs: set `
 |---|---|
 | `components/board` | Board bring-up (`M5.begin()`, PY32 IO expander for servo power) |
 | `components/scs_servo` | SCS0009 servo driver and trapezoidal `PathGenerator` |
-| `components/avatar`, `components/avatar_vm` | Face rendering: expression controller and the bytecode VM that runs `assets/*.avdsl` |
+| `components/avatar`, `components/avatar_vm` | Face rendering: expression controller and the bytecode VM that runs `assets/*.avdsl`. The face geometry and timing come from `main/pill_face.hpp` (design mocks in `docs/design/grokbot-faces/`) |
 | `components/groki_motion` | Head motion springs, touch and IMU input mapping |
 | `components/conversation` | OpenAI Realtime, Gemini Live and XiaoZhi clients |
 | `components/config_service`, `components/wifi_config_service` | BLE and Wi-Fi settings, OTA, HTTP API |
@@ -67,7 +66,7 @@ Boot with `board.set_servo_power(false)`. To enable, call `set_servo_power(true)
 
 ## Hardware constants (CoreS3)
 
-- Internal I2C: AXP2101 PMIC 0x34 and touch are managed by M5Unified; PY32 IO expander 0x6F (pin 0 = servo power enable).
+- Internal I2C: AXP2101 PMIC 0x34 and touch are managed by M5Unified; PY32 IO expander 0x6F (pin 0 = servo power enable; pin 13 = data line of the base's 12 LEDs, push-pull output).
 - Servo bus (SCS0009): UART1, TX GPIO6, RX GPIO7, 1 Mbps 8N1. Yaw ID 1 (zero 460), pitch ID 2 (zero 620). 1 step is about 0.3125 degrees (`deg = (raw - zero) * 5 / 16`).
 
 ## Releases

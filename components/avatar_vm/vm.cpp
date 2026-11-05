@@ -37,7 +37,10 @@ static_assert(static_cast<std::uint8_t>(avatar::Expression::Dizzy) == static_cas
 static_assert(static_cast<std::uint8_t>(avatar::Expression::Affection) ==
               static_cast<std::uint8_t>(ExprValue::Affection));
 static_assert(static_cast<std::uint8_t>(avatar::Expression::Bored) == static_cast<std::uint8_t>(ExprValue::Bored));
-static_assert(avatar::kExpressionCount == static_cast<std::size_t>(avatar::Expression::Bored) + 1);
+static_assert(static_cast<std::uint8_t>(avatar::Expression::Working) ==
+              static_cast<std::uint8_t>(ExprValue::Working));
+static_assert(static_cast<std::uint8_t>(avatar::Expression::Failed) == static_cast<std::uint8_t>(ExprValue::Failed));
+static_assert(avatar::kExpressionCount == static_cast<std::size_t>(avatar::Expression::Failed) + 1);
 
 // Compute the design→canvas uniform scale the original face.cpp used.
 // For circular displays we fit the 320×240 design rect by its DIAGONAL
@@ -116,9 +119,9 @@ inline float read_var(Var v, const avatar::Canvas& canvas, const avatar::DrawCon
     case Var::CheekOffY: return t.cheek_off_y;
     default: {
         const auto id = static_cast<std::uint8_t>(v);
-        const auto base = static_cast<std::uint8_t>(Var::RingBase);
-        if (id >= base && id < base + kRingVarCount && ctx.aora_ring != nullptr) {
-            return ctx.aora_ring[id - base];
+        const auto base = static_cast<std::uint8_t>(Var::ParamBase);
+        if (id >= base && id < base + kParamVarCount && ctx.face_params != nullptr) {
+            return ctx.face_params[id - base];
         }
         return 0.0f;
     }
@@ -208,7 +211,7 @@ tl::expected<void, VmError> Vm::run(const Bytecode& bc, avatar::Canvas& canvas,
         case Op::PushVar: {
             if (pc + 1 > code_size) return tl::unexpected(VmError::Truncated);
             const std::uint8_t id = code[pc++];
-            if (id >= static_cast<std::uint8_t>(Var::RingBase) + kRingVarCount) {
+            if (id >= static_cast<std::uint8_t>(Var::ParamBase) + kParamVarCount) {
                 return tl::unexpected(VmError::BadVarId);
             }
             auto r = push(read_var(static_cast<Var>(id), canvas, ctx, tuning, scale));

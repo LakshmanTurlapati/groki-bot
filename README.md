@@ -12,7 +12,7 @@ Groki Bot is an open-source desktop robot (M5Stack CoreS3 with a Stack-chan base
 ## Features
 
 - Native voice (macOS): talk directly with an agent in the Grok Bot app, using the app's existing login on your Mac, with no separate xAI voice API key.
-- Hands-free wake word: wake up your robot at any time by saying "Hi Grok", powered by lightweight local voice detection in the desktop gateway.
+- Hands-free wake word: wake up your robot at any time by saying "Hey Grok", powered by lightweight local voice detection in the desktop gateway.
 - Dynamic face tracking: keep the robot facing you as you move, using your Mac camera for face detection and real-time dual-axis servo steering.
 - Expressive eye animations: an on-device expression engine shows 15 expressions with blinking.
 - One-click web flashing and OTA: deploy without setting up a local toolchain, flashing firmware directly from Chrome or Edge and updating over Wi-Fi via on-device OTA.
@@ -25,7 +25,7 @@ Groki Bot is an open-source desktop robot (M5Stack CoreS3 with a Stack-chan base
    cd gateway && uv sync --all-extras
    ```
 3. Switch to Grok voice: Gemini is the default backend, so set `STACKCHAN_VOICE_BACKEND=gbot` and your agent name and ID in `gateway/.env`, keep the Grok Bot desktop app signed in, run the login helper in a second terminal, start the gateway, and point the robot at the gateway in the BLE settings page.
-4. Start talking by saying "Hi Grok": for detailed environment variables, login bridge commands, and troubleshooting, see [Configure Grok Bot native voice](docs/quick-start.md#configure-grok-bot-native-voice).
+4. Start talking by saying "Hey Grok": for detailed environment variables, login bridge commands, and troubleshooting, see [Configure Grok Bot native voice](docs/quick-start.md#configure-grok-bot-native-voice).
 
 For an agent named `assistant`, set `STACKCHAN_TOOL_BOT=assistant` in the gateway's `.env` and follow the gateway setup for the remaining settings.
 

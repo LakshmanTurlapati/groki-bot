@@ -24,6 +24,9 @@ Environment:
     Forwarding service address. Default ``http://127.0.0.1:18770``.
 ``STACKCHAN_ASK_TIMEOUT``
     Seconds to wait for the whole exchange. Default 110.
+``STACKCHAN_BOT_ACTIVITY``
+    Set to ``0`` to stop showing the run state (thinking / working / done /
+    waiting / blocked) on the robot's face; see :mod:`stackchan_mcp.bot_activity`.
 """
 
 from __future__ import annotations
@@ -37,6 +40,8 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from typing import Any
+
+from . import bot_activity
 
 logger = logging.getLogger(__name__)
 
@@ -146,80 +151,112 @@ def iter_gbot_replies(
 
     t0 = time.monotonic()
     last_error: Exception | None = None
-    for path in ("/send", "/ask"):
-        req = urllib.request.Request(
-            gbot_url() + path,
-            data=data,
-            method="POST",
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "X-Stackchan-Stream": "1",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if "ndjson" in ctype:
-                    yielded = False
-                    while True:
-                        line = resp.readline()
-                        if not line:
-                            break
-                        try:
-                            body = json.loads(line.decode("utf-8"))
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(body, dict):
-                            continue
-                        if not body.get("ok"):
-                            last_error = GbotBrainError(str(body.get("error") or "no reply"))
-                            break
-                        if body.get("event") == "done":
-                            continue
-                        reply = str(body.get("reply") or body.get("text") or "").strip()
-                        if not reply:
-                            continue
-                        yielded = True
-                        yield _event(body, reply, t0, "first")
-                    if yielded:
-                        return
-                    if last_error is None:
-                        last_error = GbotBrainError("empty streaming reply")
-                    continue
-                raw = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = ""
+    # The robot's face follows the run: thinking -> working -> done / waiting
+    # / blocked (see bot_activity). `finished` marks that an outcome was
+    # reported; anything else (the caller stopped reading) clears the face.
+    activity = bot_activity.tracker()
+    activity.dispatched()
+    finished = False
+    try:
+        # /ask is only a fallback for an older forwarding service without
+        # /send (404). Every other failure means the task may already have
+        # reached the agent, so it is never sent a second time.
+        for path in ("/send", "/ask"):
+            req = urllib.request.Request(
+                gbot_url() + path,
+                data=data,
+                method="POST",
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "X-Stackchan-Stream": "1",
+                },
+            )
             try:
-                detail = str(json.loads(exc.read().decode("utf-8")).get("error") or "")
-            except Exception:  # noqa: BLE001 - best effort detail only
-                pass
-            last_error = GbotBrainError(detail or f"HTTP {exc.code}")
-            logger.warning("gbot %s failed: %s", path, last_error)
-            if exc.code != 404:
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    if "ndjson" in ctype:
+                        yielded = False
+                        done_reason: str | None = None
+                        last_reply = ""
+                        stream_error: GbotBrainError | None = None
+                        while True:
+                            line = resp.readline()
+                            if not line:
+                                break
+                            try:
+                                body = json.loads(line.decode("utf-8"))
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(body, dict):
+                                continue
+                            if not body.get("ok"):
+                                stream_error = GbotBrainError(str(body.get("error") or "no reply"))
+                                break
+                            if body.get("event") == "done":
+                                done_reason = str(body.get("reason") or "") or None
+                                continue
+                            reply = str(body.get("reply") or body.get("text") or "").strip()
+                            if not reply:
+                                continue
+                            yielded = True
+                            last_reply = reply
+                            activity.reply(reply)
+                            yield _event(body, reply, t0, "first")
+                        if yielded:
+                            # Replies already reached the caller; a later
+                            # failure is reported to the face, not raised.
+                            if stream_error is not None:
+                                logger.warning("gbot %s failed after replying: %s", path, stream_error)
+                                activity.error("stream")
+                            else:
+                                activity.done(done_reason, last_reply)
+                            finished = True
+                            return
+                        last_error = stream_error or GbotBrainError("empty streaming reply")
+                        break
+                    raw = resp.read().decode("utf-8")
+            except urllib.error.HTTPError as exc:
+                detail = ""
+                try:
+                    detail = str(json.loads(exc.read().decode("utf-8")).get("error") or "")
+                except Exception:  # noqa: BLE001 - best effort detail only
+                    pass
+                last_error = GbotBrainError(detail or f"HTTP {exc.code}")
+                logger.warning("gbot %s failed: %s", path, last_error)
+                if exc.code != 404:
+                    break
+                continue
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                last_error = exc
+                logger.warning("gbot %s failed: %s", path, exc)
                 break
-            continue
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            last_error = exc
-            logger.warning("gbot %s failed: %s", path, exc)
-            break
-        try:
-            body = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            last_error = exc
-            continue
-        if not isinstance(body, dict) or not body.get("ok"):
-            last_error = GbotBrainError(str((body or {}).get("error") or "no reply"))
-            continue
-        reply = str(body.get("reply") or body.get("text") or "").strip()
-        if not reply:
-            last_error = GbotBrainError("empty reply")
-            continue
-        head, rest = split_first_sentence(reply)
-        yield _event(body, head or reply, t0, "first")
-        if rest:
-            yield {"reply": rest, "first_s": time.monotonic() - t0, "event": "more"}
-        return
-    raise GbotBrainError(f"Grok Bot forwarding failed: {last_error}") from last_error
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                break
+            if not isinstance(body, dict) or not body.get("ok"):
+                last_error = GbotBrainError(str((body or {}).get("error") or "no reply"))
+                break
+            reply = str(body.get("reply") or body.get("text") or "").strip()
+            if not reply:
+                last_error = GbotBrainError("empty reply")
+                break
+            head, rest = split_first_sentence(reply)
+            activity.reply(head or reply)
+            yield _event(body, head or reply, t0, "first")
+            if rest:
+                activity.reply(rest)
+                yield {"reply": rest, "first_s": time.monotonic() - t0, "event": "more"}
+            activity.done(None, reply)
+            finished = True
+            return
+        activity.error("timeout" if isinstance(last_error, TimeoutError) else "forward")
+        finished = True
+        raise GbotBrainError(f"Grok Bot forwarding failed: {last_error}") from last_error
+    finally:
+        if not finished:
+            activity.abandon()
 
 
 def ask_gbot(

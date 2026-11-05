@@ -5,7 +5,7 @@
 运行在你电脑上的一个 Python 服务，给 [Groki Bot](../README.zh-CN.md) 桌面机器人提供语音能力。它在 Groki Bot 仓库的 `gateway/` 目录；它和固件、Grok Bot 怎么配合，见[架构与通信说明](../docs/architecture.zh-CN.md)。
 
 - **语音对话**：默认通过 Google Gemini Live，也可选择 Grok 登录态语音，用机器人的麦克风和喇叭对话。
-- **「Hi Grok」唤醒词**：在电脑上识别，喊到机器人之后网关才把麦克风声音发给所选语音后端。
+- **「Hey Grok」唤醒词**：在电脑上识别，喊到机器人之后网关才把麦克风声音发给所选语音后端。
 - **MCP 服务**：Claude Code、Claude Desktop 或其他 MCP 客户端可以让机器人说话、读取它的状态。
 - **人脸追踪**：在带摄像头的 Mac 上，机器人转头跟着你的脸（见[人脸追踪](#人脸追踪)）。
 - 可选：用语音控制你的 Mac；把难题交给 Claude CLI 回答的 `ask_claude` 语音工具（装了 `claude` 命令行才提供）；Gemini 后端把任务交给 Grok Bot 应用里的智能体、再把回复念出来的 `ask_grokbot` 语音工具（见[可选：把任务交给 Grok Bot](#可选把任务交给-grok-bot)）。
@@ -21,7 +21,7 @@ Gemini ask_grokbot → optional localhost:18770 → gbot CLI → Grok Bot
 
 Groki Bot 固件自己就能对话：刷好固件，在设置页填上自己的 OpenAI 或 Gemini 密钥，不接电脑也能说话。以下情况再装网关：
 
-- 想用「Hi Grok」唤醒词；
+- 想用「Hey Grok」唤醒词；
 - 想让机器人转头跟着你的脸（需要带摄像头的 Mac）；
 - 想让 Claude（或其他 MCP 客户端）让机器人说话；
 - 想用语音操作电脑（Mac 控制、`ask_claude`）。
@@ -123,9 +123,10 @@ uv run --all-extras python scripts/kws_offline_repro.py --generate-say
 
 ### 更换唤醒词
 
-默认唤醒词是「Hi Grok」。唤醒词检测（sherpa-onnx 关键词识别）匹配的是一串读音，换成任何短语都不需要重新训练模型。在 `.env` 里设置后重启网关：
+默认唤醒词是「Hey Grok」。唤醒词检测（sherpa-onnx 关键词识别）匹配的是一串读音，换成任何短语都不需要重新训练模型。在 `.env` 里设置后重启网关：
 
-- 改用「Hey Groki」：`STACKCHAN_WAKE_PHRASE=hey groki`（内置，和「Hi Grok」一样带几种元音读法）。
+- 改用之前的默认唤醒词「Hi Grok」：`STACKCHAN_WAKE_PHRASE=hi grok`（内置，带几种元音读法）。
+- 改用「Hey Groki」：`STACKCHAN_WAKE_PHRASE=hey groki`（内置，和「Hey Grok」一样带几种元音读法）。
 - 自定义短语：`STACKCHAN_WAKE_PHRASE` 填短语，`STACKCHAN_WAKE_KEYWORD` 填它的读音，后面接 `@` 和短语。英文用 CMU 词典音标（ARPAbet，带重音数字）；中文用拼音，声母和韵母分开写，韵母带声调。每个读音都必须出现在模型的 `tokens.txt` 里。例如：
 
   ```bash
@@ -186,7 +187,7 @@ Claude Desktop 在 `claude_desktop_config.json` 里加入下面的配置（路�
 3. 「XiaoZhi 令牌」填和 `STACKCHAN_TOKEN` 相同的值；`STACKCHAN_TOKEN` 留空时这里也留空。
 4. 点「保存并重启」。
 
-这时 `/debug/status` 应显示 `"device": {"connected": true, ...}`。说「Hi Grok」就可以开始对话（设了 `STACKCHAN_WAKE_PHRASE=hey groki` 时说「Hey Groki」，见[更换唤醒词](#更换唤醒词)）。
+这时 `/debug/status` 应显示 `"device": {"connected": true, ...}`。说「Hey Grok」就可以开始对话（设了 `STACKCHAN_WAKE_PHRASE=hey groki` 时说「Hey Groki」，见[更换唤醒词](#更换唤醒词)）。
 
 ## 人脸追踪
 
@@ -254,7 +255,7 @@ face tracker unavailable: executable not found at .../tools/vision-tracker/.buil
 
 以下是 **Gemini 语音后端的可选 CLI 联动**。Grok 登录态语音直接走原生工具，见 [Grok Bot 登录态语音](#grok-bot-登录态语音macos)，不启动 18770 转发服务。
 
-打开这项功能后，可以说「Hi Grok，帮我查一下明天东京的天气」或「帮我调研一下 X」：Gemini 确认受理后回应，把任务交给 Grok Bot 应用里的智能体，智能体每回一段话，机器人就念一段。闲聊仍由 Gemini 直接回答。完整的消息流程见[架构与通信说明](../docs/architecture.zh-CN.md#4-把任务交给-grok-bot)。
+打开这项功能后，可以说「Hey Grok，帮我查一下明天东京的天气」或「帮我调研一下 X」：Gemini 确认受理后回应，把任务交给 Grok Bot 应用里的智能体，智能体每回一段话，机器人就念一段。闲聊仍由 Gemini 直接回答。完整的消息流程见[架构与通信说明](../docs/architecture.zh-CN.md#4-把任务交给-grok-bot)。
 
 不配置就不会开启。需要在运行网关的同一台电脑上准备：
 
@@ -296,8 +297,10 @@ curl -s -X POST http://127.0.0.1:18770/send \
 | `STACKCHAN_KWS_SCORE` | `7` | 越高越容易唤醒 |
 | `STACKCHAN_KWS_THRESHOLD` | `0.05` | 越低越灵敏 |
 | `STACKCHAN_KWS_MODEL_DIR` | `./models/kws` | 唤醒词模型位置 |
-| `STACKCHAN_WAKE_PHRASE`、`STACKCHAN_WAKE_KEYWORD` | `hi grok` | 唤醒词，见[更换唤醒词](#更换唤醒词)。只设 `STACKCHAN_WAKE_PHRASE=hey groki` 即可改用「Hey Groki」 |
+| `STACKCHAN_WAKE_PHRASE`、`STACKCHAN_WAKE_KEYWORD` | `hey grok` | 唤醒词，见[更换唤醒词](#更换唤醒词)。只设 `STACKCHAN_WAKE_PHRASE=hey groki` 即可改用「Hey Groki」 |
 | `STACKCHAN_WAKE_IDLE_S` | `30` | 安静多久后结束这一轮聆听 |
+| `STACKCHAN_WAKE_MAX_LISTENING_S` | `45` | 机器人最后一次回答后，聆听窗口最长保持多久（有噪声也会关闭）；`0` 不限制 |
+| `STACKCHAN_CONVERSATION_IDLE_S` | `8` | 回答后多久没人说话就结束对话；`0` 关闭。说「bye Grok」或调用本机 `POST /conversation/end` 可随时结束；`/say` 之后会直接开始聆听（`"listen": false` 只播报） |
 | `STACKCHAN_MAC_CONTROL` | 关 | 设为 `1` 允许语音控制这台 Mac（见「安全」） |
 | `STACKCHAN_FACE_TRACKER_AUTOSTART` | 开 | 设为 `0` 时不启动 Mac 人脸追踪程序（没有摄像头的电脑） |
 | `STACKCHAN_FACE_TRACKER_BIN` | `tools/vision-tracker/.build/release/groki-vision-tracker` | 人脸追踪程序的路径 |

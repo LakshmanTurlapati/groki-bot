@@ -87,6 +87,38 @@ expansion and per-chunk JSON work. The host uses native CRC computation and
 reads available serial bytes immediately, avoiding the timeout from waiting
 to fill a 512-byte read. Resolution remains 320×240 and JPEG quality stays 80.
 
+## Tracking during conversations and sleep
+
+Tracking continues through a conversation and pauses only while the user
+talks. The gateway sends mode `engaged` while a conversation is on, and
+`conversation` while the wake gate hears the user. That signal needs 0.15
+seconds of voiced audio inside an open listening window, so talk in the room
+without the wake word does not pause the head, and it lasts 0.8 seconds past
+the last voiced frame (`STACKCHAN_USER_SPEECH_HANGOVER_S`). `engaged` also
+pauses idle motion, which would otherwise wander during a conversation.
+
+Replies are the difficult case. The servos and the speaker amplifier share a
+power rail, and a move or a torque change can sag it enough to glitch audio,
+so the servo task normally holds the head still for the whole reply. In
+`engaged` mode it lets tracking targets through with three limits: torque never
+changes during speech, motion drops to 15°/s and 12°/s, and captures drop to
+`STACKCHAN_CAMERA_SPEAKING_FPS` because each one briefly stalls the face
+renderer. Torque is turned on as soon as `engaged` begins, because a stationary
+face writes no goals and would otherwise leave it off for the reply. A reply
+that starts before torque is on holds still until it ends.
+
+`STACKCHAN_TRACK_WHILE_SPEAKING=0` restores the still head during replies
+without reflashing. Firmware without `camera_tracking_engaged_v1` keeps the
+original behavior: the gateway sends `conversation` for the whole conversation.
+
+When idle decay puts the robot to sleep, the firmware returns the head to
+yaw 0, pitch 0, stops idle motion, and refuses tracking captures before touching
+the camera. The gateway then polls once a second and reports `camera_state`
+`sleeping`; that poll is how it notices the robot waking. Only idle decay counts:
+a Sleepy mood or gesture shows the same face without stopping tracking, and a
+visible face does not keep the robot awake. Touch, voice, or the wake word wakes
+it. Manual head commands still work while it sleeps.
+
 ## Recorded hardware validation on 2026-11-03
 
 Before the continuous-motion upgrade, the tuned JPEG build completed a
@@ -102,14 +134,40 @@ Before the continuous-motion upgrade, the tuned JPEG build completed a
 | Observed median face-center offset | 3.67% of width / 2.53% of height |
 
 The uncompressed baseline reported a median 1,058.5 ms capture-and-transfer
-time. The installed version reduces that by 61%, about 2.6× faster. The
+time. That reference version reduced it by 61%, about 2.6× faster. The
 last JPEG payload was 15,348 bytes versus 153,600 uncompressed bytes.
 Voice stayed connected throughout the run. Face-center measurements apply
 to detected faces in a live scene; target motion was not controlled, so
 these are observations rather than a calibrated accuracy benchmark. The
-complete update rate includes servo settling and varies with movement.
+reference update rate included servo settling and varied with movement.
 
-Automated validation passed 989 gateway tests (two skipped), 11 Swift tests,
+The final v2 controller and firmware completed a 60.19-second check after a
+two-minute firmware/USB stability run:
+
+| Measurement | Final smooth-tracking build |
+| --- | --- |
+| Completed frames / face detections | 167 / 155 |
+| Complete update rate | 2.77 per second, versus 1.30 before smoothing |
+| Median capture and USB transfer | 306.1 ms, versus 412.5 ms |
+| Median Vision detection | 13.9 ms |
+| Camera errors / USB reconnects | 0 / 0 |
+| Captures observed during motion | 46, with at most 1.875° bracketed movement |
+| Observed median face-center offset | 2.82% of width / 3.19% of height |
+
+The preceding two-minute run completed 340 frames at 2.83 updates/second,
+also with zero errors or reconnects. The final centering gain removes the
+remaining redundant damping outside hysteresis. Scene and target motion
+were not controlled across runs, so the centering figures are observations,
+not a calibrated before/after accuracy claim. No resolution or JPEG quality
+reduction was required.
+
+In the deterministic stationary-noise test (±2% horizontal image jitter),
+corrective-command RMS fell from 0.208° to zero. A subsequent large target
+step still produced a 15° first correction. This measures controller command
+noise, not physical motor jitter. Motion tests also verify that retargeting
+preserves commanded position and velocity and bounds acceleration.
+
+Automated validation passed 1006 gateway tests (two skipped), 11 Swift tests,
 and 37 firmware motion/camera/head/conversation host scenarios with address and
 undefined-behavior sanitizers. The CoreS3 firmware build passed and was
 flashed with saved settings retained. A short live speech check sent 43 audio

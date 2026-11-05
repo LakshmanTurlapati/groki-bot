@@ -17,17 +17,21 @@ public:
 
     static constexpr std::uint8_t kPinServoPowerEnable = 0;
 
-    // M5 Stack-chan base mounts 12 WS2812 NeoPixels on the back, driven by
-    // the PY32 MCU on its IO14 pin and exposed via I2C as a small RAM (RGB565
-    // LE per LED) + a config register that holds the count + a refresh-trigger
-    // bit. We never bit-bang the NeoPixel protocol from the ESP — the PY32
-    // does it.
+    // M5 Stack-chan base drives 12 WS2812 NeoPixels (0-5 left, 6-11 right),
+    // driven by the PY32 MCU on its IO14 pin and exposed via I2C as a small
+    // RAM (RGB565 LE per LED) + a config register that holds the count + a
+    // refresh-trigger bit. We never bit-bang the NeoPixel protocol from the
+    // ESP — the PY32 does it, once IO14 is a push-pull output.
     static constexpr std::uint8_t kMaxLeds = 32;
+    // IO14 counted from 0, as in M5Stack's StackChan BSP (setDirection(13)).
+    static constexpr std::uint8_t kPinLedData = 13;
 
     static tl::expected<Py32Expander, Error> probe(std::uint8_t address = kAddress);
 
     tl::expected<void, Error> set_direction(std::uint8_t pin, bool output);
     tl::expected<void, Error> set_pull_up(std::uint8_t pin, bool enable);
+    // Output drive: open-drain when enabled, push-pull otherwise.
+    tl::expected<void, Error> set_open_drain(std::uint8_t pin, bool enable);
     tl::expected<void, Error> digital_write(std::uint8_t pin, bool level);
 
     // Set how many of the up-to-32 LEDs are active (the rest are ignored even

@@ -2691,3 +2691,9 @@ def test_spoken_notices_ask_for_the_users_language(monkeypatch):
     result, session = _run_ask_grokbot(monkeypatch, fake_iter, wait_for=1)
     assert "in their language" in result["instruction"]
     assert "in their language" in session.texts[0]
+
+
+def test_conversation_idle_timeout_defaults_to_env(monkeypatch):
+    monkeypatch.setenv("STACKCHAN_CONVERSATION_IDLE_S", "0")
+    assert GeminiLiveBridge(esp32=FakeESP32(), api_key="test")._conversation_idle_timeout_s == 0.0
+    assert GeminiLiveBridge(esp32=FakeESP32(), api_key="test", conversation_idle_timeout_s=2.0)._conversation_idle_timeout_s == 2.0

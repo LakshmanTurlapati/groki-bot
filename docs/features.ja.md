@@ -52,6 +52,6 @@
   - **Wi-Fi デバイス側 fetch** (v0.7.4+): `POST /api/ota/release {tag}` で device
     自身が GitHub Pages から自分のボード用バイナリをダウンロード → 適用 (STA 必要)
 
-![Eye-ring compositing pipeline](images/expression-engine.svg)
+![Pill face states](images/pill-face-states.png)
 
 ![AI voice conversation](images/voice-flow.svg)

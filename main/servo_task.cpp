@@ -28,6 +28,12 @@ constexpr TickType_t kPeriodTicks = pdMS_TO_TICKS(20);
 constexpr std::uint16_t kDefaultSpringSpeed = 200;
 constexpr std::uint16_t kFollowGoalSpeed = 0;
 constexpr std::uint16_t kGoalTime = 0;
+// Camera tracking motion profile, in degrees per second and per second squared.
+constexpr float kTrackYawSpeed = 35.0f, kTrackYawAccel = 140.0f;
+constexpr float kTrackPitchSpeed = 28.0f, kTrackPitchAccel = 110.0f;
+// Gentler while speech plays: the servos share a power rail with the speaker amp.
+constexpr float kSpeechTrackYawSpeed = 15.0f, kSpeechTrackYawAccel = 60.0f;
+constexpr float kSpeechTrackPitchSpeed = 12.0f, kSpeechTrackPitchAccel = 45.0f;
 
 void servo_task_entry(void* arg)
 {
@@ -96,7 +102,9 @@ void servo_task_entry(void* arg)
         }
         if (auto request = control.take_request(now_ms())) {
             auto allowed = [&] {
-                return control.enabled.load() && !control.range_mode.load() && !control.masked.load() &&
+                // During speech only a head that already holds torque can follow: see the audio guard below.
+                const bool speech_ok = !control.masked.load() || (control.engaged() && torque_on);
+                return control.enabled.load() && !control.range_mode.load() && speech_ok &&
                        !args.state->audio_stream_active.load();
             };
             const bool settled = yaw_motion.initialized() && pitch_motion.initialized() && !yaw_motion.moving() &&
@@ -205,9 +213,14 @@ void servo_task_entry(void* arg)
         // uses audio_stream_active. We never poll the speaker directly: its
         // isPlaying() flickers false between streamed reply segments and would
         // let the head twitch mid-reply.
-        const bool audio_active = args.state->servo.masked.load(std::memory_order_relaxed) ||
-                                  args.state->audio_stream_active.load(std::memory_order_relaxed);
-        if (audio_active) {
+        //
+        // One exception: in Engaged mode a reply lets camera tracking keep
+        // moving with torque already on, on the gentler speech profile. Torque
+        // never changes during speech, so the head only follows if it was
+        // engaged before the reply began (see below).
+        const bool speech = control.masked.load(std::memory_order_relaxed);
+        const bool speech_tracking = speech && torque_on && control.engaged() && control.target_is_tracking();
+        if (args.state->audio_stream_active.load(std::memory_order_relaxed) || (speech && !speech_tracking)) {
             vTaskDelayUntil(&last_wake, kPeriodTicks);
             continue;
         }
@@ -215,8 +228,16 @@ void servo_task_entry(void* arg)
         // Clamp commanded angles to the configured motion range so callers
         // (demo, conversation, future UI) all stay within the per-device limits.
         const auto command = args.state->servo.take_target();
-        yaw_motion.set_motion_limits(command.tracking ? 35.0f : 0, command.tracking ? 140.0f : 0);
-        pitch_motion.set_motion_limits(command.tracking ? 28.0f : 0, command.tracking ? 110.0f : 0);
+        if (!command.tracking) {
+            yaw_motion.set_motion_limits(0, 0);
+            pitch_motion.set_motion_limits(0, 0);
+        } else if (speech) {
+            yaw_motion.set_motion_limits(kSpeechTrackYawSpeed, kSpeechTrackYawAccel);
+            pitch_motion.set_motion_limits(kSpeechTrackPitchSpeed, kSpeechTrackPitchAccel);
+        } else {
+            yaw_motion.set_motion_limits(kTrackYawSpeed, kTrackYawAccel);
+            pitch_motion.set_motion_limits(kTrackPitchSpeed, kTrackPitchAccel);
+        }
         const auto pose = command.pose;
         const float yaw_deg = clamp_deg(pose.yaw, args.limits.yaw_min_deg, args.limits.yaw_max_deg);
         const float pitch_deg = clamp_deg(pose.pitch, args.limits.pitch_min_deg, args.limits.pitch_max_deg);
@@ -238,6 +259,13 @@ void servo_task_entry(void* arg)
                 pitch_motion.reset(pitch_deg);
             }
             last_pitch_target = 0xFFFF; // force first goal write
+        }
+
+        // A conversation may start a reply at any moment, and torque must not
+        // change once it does. Re-driving the current pose turns torque on now.
+        const bool engaged = control.engaged();
+        if (engaged && !torque_on) {
+            last_yaw_target = last_pitch_target = 0xFFFF;
         }
 
         if (target_changed(yaw_deg, yaw_motion.target()) ||
@@ -284,8 +312,8 @@ void servo_task_entry(void* arg)
                 last_pitch_target = pitch_target;
             }
             release_at = step_now_ms + kSettleMarginMs;
-        } else if (torque_on && !yaw_motion.moving() && !pitch_motion.moving() && step_now_ms >= release_at &&
-                   !control.tracking_holds(step_now_ms)) {
+        } else if (torque_on && !speech && !engaged && !yaw_motion.moving() && !pitch_motion.moving() &&
+                   step_now_ms >= release_at && !control.tracking_holds(step_now_ms)) {
             // Move complete and holding still → release torque.
             (void)yaw.enable_torque(false);
             (void)pitch.enable_torque(false);

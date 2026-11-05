@@ -76,6 +76,7 @@ void set_camera_reg_sink(CameraRegSink sink);
 void set_mcp_say_kana_sink(McpSayKanaSink sink);
 void set_lt_config_sink(LtConfigSink sink);
 void set_mcp_expression_sink(McpExpressionSink sink);
+void set_mcp_activity_sink(McpActivitySink sink);
 void set_mcp_balloon_sink(McpBalloonSink sink);
 
 } // namespace stackchan::wifi_config::http

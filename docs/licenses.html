@@ -36,11 +36,6 @@ SPDX-License-Identifier: BSL-1.0
 <h2>Firmware upstream</h2>
 <p>Based on <a href="https://github.com/ciniml/stackchan-idf" target="_blank" rel="noopener">ciniml/stackchan-idf</a>, Copyright (c) 2026 Kenta IDA, under the <a href="#bsl">Boost Software License 1.0</a>.</p>
 
-<h2>Data under a non-commercial license</h2>
-<div class="warn">
-<p><strong>Emotion Ball eye-ring data</strong> from <a href="https://github.com/sam70361/aora-bot" target="_blank" rel="noopener">sam70361/aora-bot</a> (commit <code>e3b6148</code>), Copyright (c) 2026 sam70361, is compiled into the firmware (<code>main/aora_ring_data.hpp</code>, animation parameters in <code>main/aora_face.hpp</code>). It is used under the <a href="#emotion-ball">Emotion Ball Community License</a>: non-commercial use only. The firmware may therefore be used and shared for non-commercial purposes only. The ball character's visual design is not used.</p>
-</div>
-
 <h2>Compiled into the firmware</h2>
 <div class="tw"><table><thead><tr><th>Component</th><th>License</th><th>Copyright</th></tr></thead><tbody><tr><td>hts_engine API 1.10 (modified)</td><td><a href="#hts">BSD-3-Clause</a></td><td>(c) 2001-2015 Nagoya Institute of Technology; (c) 2001-2008 Tokyo Institute of Technology</td></tr><tr><td>M5GFX 0.2.36 (patched)</td><td><a href="#mit">MIT</a></td><td>(c) 2021 M5Stack</td></tr><tr><td>efont Chinese bitmap fonts (in M5GFX)</td><td><a href="#efont">BSD-3-Clause</a></td><td>(c) 2000-2001 /efont/ The Electronic Font Open Laboratory</td></tr><tr><td>Adafruit GFX 5x7 font (in M5GFX)</td><td><a href="#adafruit">BSD-2-Clause</a></td><td>(c) 2012 Adafruit Industries</td></tr><tr><td>M5Unified</td><td><a href="#mit">MIT</a></td><td>(c) 2021 M5Stack</td></tr><tr><td>tl::expected 1.3.1</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0-1.0</a></td><td>Sy Brand</td></tr><tr><td>ESP-IDF 5.5</td><td><a href="#apache">Apache-2.0 and bundled component licenses</a></td><td>(c) Espressif Systems (Shanghai) Co., Ltd. and contributors</td></tr><tr><td>espressif/cjson 1.7.19</td><td><a href="#mit">MIT</a></td><td>(c) 2009-2017 Dave Gamble and cJSON contributors</td></tr><tr><td>espressif/dl_fft 0.7.0, espressif/esp-dl 3.3.11</td><td><a href="#mit">MIT</a></td><td>(c) 2021 Espressif Systems (Shanghai) Co., Ltd.</td></tr><tr><td>espressif/esp-dsp 1.8.0, esp-now 2.5.3, esp_jpeg 1.3.1, esp_websocket_client 1.8.0, esp32-camera 2.1.7, led_strip 3.0.3, mdns 1.13.1, cmake_utilities 1.1.1</td><td><a href="#apache">Apache-2.0</a></td><td>Espressif Systems</td></tr><tr><td>espressif/esp-sr 2.5.4 (with speech models), espressif/esp_new_jpeg 1.0.2</td><td><a href="#espmit">ESPRESSIF MIT License</a></td><td>(c) 2018, 2024 Espressif Systems</td></tr><tr><td>espressif/esp_audio_codec 2.6.2</td><td><a href="#espmod">Espressif Modified MIT License</a></td><td>(c) 2025 Espressif Systems (Shanghai) Co., Ltd.</td></tr><tr><td>espressif/quirc 1.2.0</td><td><a href="#isc">ISC</a></td><td>(c) 2010-2012 Daniel Beer</td></tr></tbody></table></div>
 
@@ -81,124 +76,6 @@ SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
 FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
 ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.</pre>
-<h3 id="emotion-ball">Emotion Ball Community License (eye-ring data)</h3>
-<pre>Emotion Ball Community License
-Emotion Ball 社区许可（非商业免费；引擎与表情数据可另行商业授权；球形角色视觉形象永不商用）
-
-Copyright (c) 2026 sam70361 (仅就独立编写的源代码、表情配置数据与文档部分)
-
-适用范围 / Scope: 本许可仅适用于仓库根目录及 emotion-ball/ 目录的内容
-（球形角色项目及其站点与文档）。mood-mates/ 子目录为独立原创角色子项目，
-受其自带的 mood-mates/LICENSE（社区许可）与 mood-mates/LICENSE-COMMERCIAL.md
-（商业许可）约束，不适用本许可。
-This license applies only to the contents at the repository root and in the
-emotion-ball/ directory (the ball-character project, its site and docs). The
-mood-mates/ subdirectory is an independent original-character sub-project
-governed by its own mood-mates/LICENSE (community) and
-mood-mates/LICENSE-COMMERCIAL.md (commercial); this license does not apply
-to it.
-
-【中文】
-
-0. 内容划分：本项目包含两类授权不同的内容——
-
-   (A) 表情引擎与表情数据：源代码（状态机、弹簧插值动画、球面投影、
-       渲染与配置注册中心等）、表情配置数据（眼环 / 眼形 / 嘴形参数、
-       动画原语与关键帧序列）以及配套文档，均为独立编写与设计；
-
-   (B) 球形角色视觉形象：blob / wedge / gem 身体造型、配色方案、彩带等
-       特效视觉，及其组合形成的整体角色形象。
-
-1. 非商业使用（适用于 A 与 B）：允许免费查看、下载、运行、修改本项目，
-   并在注明出处的前提下，在个人学习、研究与技术交流等非商业场景中分享
-   本项目或其衍生作品。
-
-2. 商业使用（仅限 A）：表情引擎与表情数据可通过商业授权用于商业用途，
-   通用条款见仓库根目录 LICENSE-COMMERCIAL.md；商业授权请联系
-   1251579308@qq.com。
-
-3. 视觉形象永不商用（B）：球形角色视觉形象仅供个人技术学习与研究，
-   禁止任何商业用途；该部分不提供、也永不提供商业授权。取得商业授权的
-   被许可方亦不得将球形角色视觉形象用于商业用途，须搭配自有或另行合法
-   授权的角色形象使用。详见仓库根目录 NOTICE.md。
-
-4. 未经商业授权，禁止将本项目或其衍生作品用于任何商业用途，包括但不
-   限于售卖、付费授权、集成到商业产品或服务、用于商业推广等。
-
-5. 分发本项目或其衍生作品时，须完整保留本许可声明、版权信息与
-   NOTICE.md。
-
-6. 本项目按&quot;现状&quot;提供，不附带任何明示或默示的担保；因使用本项目产生
-   的任何风险与责任由使用者自行承担。
-
-[English]
-
-0. CONTENT CLASSES: this project contains two differently licensed classes
-   of content —
-
-   (A) Expression engine &amp; emotion data: the source code (state machine,
-       spring interpolation, spherical projection, rendering, config
-       registry, etc.), the emotion configuration data (eye-ring / eye-shape
-       / mouth-shape parameters, animation primitives and keyframe
-       sequences) and the accompanying documentation, all independently
-       written and designed;
-
-   (B) Ball-character visual designs: the blob / wedge / gem body
-       silhouettes, color schemes, ribbon and other FX visuals, and the
-       overall character appearance they form together.
-
-1. NON-COMMERCIAL USE (applies to both A and B): viewing, downloading,
-   running and modifying this project free of charge, and sharing this
-   project or derivative works with proper attribution in non-commercial
-   scenarios (personal learning, research and technical exchange) are
-   permitted.
-
-2. COMMERCIAL USE (A only): the expression engine and emotion data may be
-   used commercially under a commercial license; see LICENSE-COMMERCIAL.md
-   in the repository root for the general terms, and contact
-   1251579308@qq.com for licensing.
-
-3. VISUAL DESIGNS NEVER COMMERCIAL (B): the ball-character visual designs
-   are provided solely for personal technical study and research; any
-   commercial use is prohibited, and no commercial license is or will ever
-   be offered for them. Even commercial licensees must not use the
-   ball-character visual designs commercially and must pair the licensed
-   materials with their own or otherwise lawfully licensed character
-   designs. See NOTICE.md in the repository root.
-
-4. Without a commercial license, any commercial use of this project or its
-   derivative works is prohibited, including but not limited to selling,
-   paid licensing, integration into commercial products or services, or use
-   in commercial promotion.
-
-5. This license notice, the copyright notice and NOTICE.md must be retained
-   in all copies or substantial portions of the project.
-
-6. The project is provided &quot;AS IS&quot;, without warranty of any kind, express or
-   implied. All risks and liabilities arising from its use are borne by the
-   user.</pre>
-<h3 id="emotion-ball-notice">Emotion Ball NOTICE.md</h3>
-<pre># NOTICE · 使用声明 / Usage Notice
-
-&gt; **适用范围**：本声明针对 `emotion-ball/` 目录球形角色（blob / wedge / gem）的**视觉形象**（身体造型、配色方案、彩带等特效视觉及其整体形象）。表情引擎源代码与表情配置数据不在本声明限制范围内，采用「非商业免费 + 可获取商业授权」双许可，详见根目录 `LICENSE` 与 `LICENSE-COMMERCIAL.md`。`mood-mates/` 目录中的角色（云宝 Nimbo、亮亮 Twinkle）为独立原创设计，亦不在本声明范围内，详见 `mood-mates/LICENSE` 与 `mood-mates/LICENSE-COMMERCIAL.md`。
-&gt;
-&gt; **Scope**: This notice covers the **visual designs** of the ball-shaped characters (blob / wedge / gem) in the `emotion-ball/` directory — body silhouettes, color schemes, ribbon and other FX visuals, and the overall character appearance. The expression engine source code and emotion configuration data are outside this notice and are dual-licensed (free for non-commercial use + commercial licensing available) — see `LICENSE` and `LICENSE-COMMERCIAL.md` in the repository root. The characters in the `mood-mates/` directory (Nimbo the cloud, Twinkle the star) are independently created original designs and also fall outside this notice — see `mood-mates/LICENSE` and `mood-mates/LICENSE-COMMERCIAL.md`.
-
-## 【中文】
-
-1. **视觉形象使用限制**：球形角色的视觉形象（身体造型、配色方案、彩带等特效视觉及其整体形象）仅供个人技术学习与研究，**禁止任何商业用途**；该部分不提供、也永不提供商业授权。
-
-2. **代码与表情数据归属**：本仓库中的代码实现（状态机、弹簧插值动画、球面投影、配置注册中心等）与表情配置数据（眼环 / 眼形 / 嘴形参数、动画原语、关键帧序列）为独立编写与设计，非商业使用免费，商业用途可获取商业授权（见 `LICENSE` 与 `LICENSE-COMMERCIAL.md`）；商业使用时须搭配使用方自有或另行合法授权的角色形象。
-
-3. **联系方式**：若认为本仓库的内容存在不妥，请通过邮箱 **1251579308@qq.com** 联系，我们将在收到通知后及时处理。
-
-## [English]
-
-1. **Visual-design restrictions**: The ball characters&#x27; visual designs (body silhouettes, color schemes, ribbon and other FX visuals, and the overall character appearance) are for personal technical study and research only. **Any commercial use is prohibited**, and no commercial license is or will ever be offered for them.
-
-2. **Code &amp; emotion data**: The code in this repository (state machine, spring interpolation, spherical projection, config registry, etc.) and the emotion configuration data (eye-ring / eye-shape / mouth-shape parameters, animation primitives, keyframe sequences) were independently written and designed. They are free for non-commercial use, and commercial licensing is available (see `LICENSE` and `LICENSE-COMMERCIAL.md`); commercial use must pair them with the user&#x27;s own or otherwise lawfully licensed character designs.
-
-3. **Contact**: If you consider any content of this repository inappropriate, please contact **1251579308@qq.com** and it will be handled promptly upon notice.</pre>
 <h3 id="apache">Apache License 2.0</h3>
 <pre>                                 Apache License
                            Version 2.0, January 2004

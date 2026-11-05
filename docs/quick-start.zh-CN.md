@@ -8,7 +8,7 @@
 2. 在 Mac 上装网关：`git clone` 本仓库，`cd groki-bot/gateway`，`uv sync --all-extras`，`cp .env.example .env`。
 3. 按[配置 Grok Bot 原生语音](#配置-grok-bot-原生语音)一节，在 `gateway/.env` 中设置四项配置。
 4. 另开一个终端，按[配置 Grok Bot 原生语音](#配置-grok-bot-原生语音)一节的完整命令启动登录桥，并保持运行。
-5. 按[用法 2](voice-backends.zh-CN.md#用法-2固件加网关)启动网关，在蓝牙设置页把机器人指向 `ws://<电脑局域网 IP>:8765`，然后说"Hi Grok"。
+5. 按[用法 2](voice-backends.zh-CN.md#用法-2固件加网关)启动网关，在蓝牙设置页把机器人指向 `ws://<电脑局域网 IP>:8765`，然后说"Hey Grok"。
 
 默认后端仍是 Gemini，把 `STACKCHAN_VOICE_BACKEND` 设回 `gemini` 即可切回。其他语音方式（OpenAI Realtime、Gemini Live、用 `gbot` 命令行转交任务）在下面的[其他语音后端](voice-backends.zh-CN.md#其他语音后端)一节。
 
@@ -61,7 +61,7 @@ node scripts/gbot_voice_session_bridge.mjs
 curl http://127.0.0.1:18771/health
 ```
 
-登录桥运行时会返回 `"ok": true`。这两项只确认后端选择和登录桥配置，不证明登录有效或语音已通。真正的确认是对机器人说 "Hi Grok"，听到回应。
+登录桥运行时会返回 `"ok": true`。这两项只确认后端选择和登录桥配置，不证明登录有效或语音已通。真正的确认是对机器人说 "Hey Grok"，听到回应。
 
 要切回 Gemini，把 `STACKCHAN_VOICE_BACKEND` 改成 `gemini`（或删掉这一行），保留有效的 `GEMINI_API_KEY`，再重启网关。若网关由其他方式启动、环境里另外注入了 `gbot`，要在那里一起改。独立运行的登录桥不会自动退出，不用时在它的终端里结束。
 

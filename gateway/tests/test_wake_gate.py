@@ -411,6 +411,64 @@ def test_close_resets_state_and_keyword_spotter() -> None:
     assert kws.reset_count == 1
 
 
+def test_open_starts_a_window_without_the_wake_word_or_preroll() -> None:
+    kws = FakeKeywordSpotter()
+    clock = FakeClock()
+    gate = WakeGate(kws=kws, clock=clock, idle_s=5.0)
+
+    assert gate.process(_pcm(1000)).forward_pcm == ()
+    assert gate.open() is True
+
+    assert gate.state == WakeGateState.LISTENING
+    # Room audio buffered before the window is not part of the answer.
+    assert gate.process(_pcm(2)).forward_pcm == (_pcm(2),)
+    clock.advance(5.0)
+    assert gate.process(_pcm(0)).closed is True
+
+
+def test_open_on_an_open_window_only_restarts_its_timers() -> None:
+    clock = FakeClock()
+    gate = WakeGate(kws=FakeKeywordSpotter([True]), clock=clock, idle_s=0, max_listening_s=10.0)
+    gate.process(_pcm(1000))
+
+    clock.advance(8.0)
+    assert gate.open() is False
+    clock.advance(8.0)
+    assert gate.process(_pcm(0)).closed is False
+    clock.advance(2.0)
+    assert gate.process(_pcm(0)).closed is True
+
+
+def test_extend_restarts_the_max_window_after_a_reply_but_never_opens() -> None:
+    clock = FakeClock()
+    gate = WakeGate(kws=FakeKeywordSpotter([True]), clock=clock, idle_s=0, max_listening_s=10.0)
+
+    assert gate.extend() is False
+    assert gate.state == WakeGateState.DORMANT
+
+    gate.process(_pcm(1000))
+    clock.advance(9.0)
+    # The microphone is off while the robot speaks: the reply end is reported.
+    assert gate.extend() is True
+    clock.advance(9.0)
+    assert gate.process(_pcm(0)).closed is False
+    clock.advance(1.0)
+    assert gate.process(_pcm(0)).closed is True
+
+
+def test_conversation_idle_timeout_reads_env(monkeypatch) -> None:
+    from stackchan_mcp.wake_gate import conversation_idle_timeout_from_env
+
+    monkeypatch.delenv("STACKCHAN_CONVERSATION_IDLE_S", raising=False)
+    assert conversation_idle_timeout_from_env() == 8.0
+    monkeypatch.setenv("STACKCHAN_CONVERSATION_IDLE_S", "300")
+    assert conversation_idle_timeout_from_env() == 300.0
+    monkeypatch.setenv("STACKCHAN_CONVERSATION_IDLE_S", "-1")
+    assert conversation_idle_timeout_from_env() == 0.0
+    monkeypatch.setenv("STACKCHAN_CONVERSATION_IDLE_S", "soon")
+    assert conversation_idle_timeout_from_env() == 8.0
+
+
 def test_pcm_rms_int16_uses_sample_energy() -> None:
     pcm = _pcm(1000, samples=3)
     assert pcm_rms_int16(pcm) == 1000.0
@@ -523,11 +581,37 @@ def _clear_wake_env(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_default_wake_word_is_hi_grok(monkeypatch, tmp_path) -> None:
+def test_default_wake_word_is_hey_grok(monkeypatch, tmp_path) -> None:
     from stackchan_mcp import wake_gate
 
     _clear_wake_env(monkeypatch)
-    assert wake_gate._phrase_from_env() == "hi grok"
+    assert wake_gate._phrase_from_env() == "hey grok"
+    assert wake_gate._keyword_from_env() == "HH EY1 G R AA1 K @hey_grok"
+
+    model_dir = _fake_kws_model(monkeypatch, tmp_path)
+    spotter = SherpaOnnxKeywordSpotter(
+        model_dir=model_dir,
+        keyword=wake_gate._keyword_from_env(),
+        phrase=wake_gate._phrase_from_env(),
+    )
+    lines = (model_dir / "stackchan_keywords.txt").read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "HH EY1 G R AA1 K @hey_grok",
+        "HH EY1 G R OW1 K @hey_grok_ow",
+        "HH EY1 G R AO1 K @hey_grok_ao",
+        "HH EY1 G R AH1 K @hey_grok_ah",
+    ]
+    # Every variant tag counts as the wake word.
+    for tag in ("hey_grok", "hey_grok_ow", "hey_grok_ao", "hey_grok_ah"):
+        assert spotter._result_matches(tag)
+    assert not spotter._result_matches("hi_grok")
+
+
+def test_hi_grok_phrase_selects_the_previous_keyword(monkeypatch, tmp_path) -> None:
+    from stackchan_mcp import wake_gate
+
+    _clear_wake_env(monkeypatch)
+    monkeypatch.setenv("STACKCHAN_WAKE_PHRASE", "Hi Grok")
     assert wake_gate._keyword_from_env() == "HH AY1 G R AA1 K @hi_grok"
 
     model_dir = _fake_kws_model(monkeypatch, tmp_path)
@@ -543,10 +627,9 @@ def test_default_wake_word_is_hi_grok(monkeypatch, tmp_path) -> None:
         "HH AY1 G R AO1 K @hi_grok_ao",
         "HH AY1 G R AH1 K @hi_grok_ah",
     ]
-    # Every variant tag counts as the wake word.
     for tag in ("hi_grok", "hi_grok_ow", "hi_grok_ao", "hi_grok_ah"):
         assert spotter._result_matches(tag)
-    assert not spotter._result_matches("hey_groki")
+    assert not spotter._result_matches("hey_grok")
 
 
 def test_hey_groki_phrase_switches_to_the_optional_keyword(monkeypatch, tmp_path) -> None:
@@ -578,3 +661,91 @@ def test_custom_wake_keyword_is_written_alone(monkeypatch) -> None:
     from stackchan_mcp.wake_gate import keywords_file_body
 
     assert keywords_file_body("HH EH1 L OW0 @hello") == "HH EH1 L OW0 @hello\n"
+
+
+def _gate_after_wake(clock: FakeClock) -> WakeGate:
+    gate = WakeGate(kws=FakeKeywordSpotter([True]), activity_rms_threshold=500.0, clock=clock)
+    gate.process(_pcm(1200))
+    return gate
+
+
+def test_wake_word_counts_as_talking_until_the_hangover_ends() -> None:
+    clock = FakeClock()
+    gate = _gate_after_wake(clock)
+
+    assert gate.user_speaking is True
+    clock.advance(gate.user_speech_hangover_s - 0.01)
+    assert gate.user_speaking is True
+    clock.advance(0.02)
+    assert gate.user_speaking is False
+
+
+def test_sustained_voice_counts_as_talking() -> None:
+    clock = FakeClock()
+    gate = _gate_after_wake(clock)
+    clock.advance(2.0)
+
+    for _ in range(4):
+        gate.process(_pcm(1300))
+        clock.advance(0.06)
+
+    assert gate.user_speaking is True
+
+
+def test_short_noise_is_not_talking_but_keeps_the_window_open() -> None:
+    clock = FakeClock()
+    gate = _gate_after_wake(clock)
+    clock.advance(2.0)
+
+    gate.process(_pcm(1300))
+    clock.advance(0.1)
+    gate.process(_pcm(100))
+    clock.advance(0.1)
+    gate.process(_pcm(1300))
+
+    assert gate.user_speaking is False
+    assert gate._last_voice_at == clock.now
+
+
+def test_window_timers_are_not_talking() -> None:
+    clock = FakeClock()
+    tts = [True]
+    gate = WakeGate(kws=FakeKeywordSpotter(), clock=clock, is_tts_active=lambda: tts[0])
+
+    assert gate.open() is True
+    assert gate.user_speaking is False
+    assert gate.extend() is True
+    assert gate.user_speaking is False
+    gate.process(_pcm(100))
+    tts[0] = False
+    gate.process(_pcm(100))
+    assert gate.user_speaking is False
+
+
+def test_closing_the_window_ends_talking_at_once() -> None:
+    clock = FakeClock()
+    gate = _gate_after_wake(clock)
+
+    gate.close()
+
+    assert gate.speech_until is None
+    assert gate.user_speaking is False
+
+
+def test_room_noise_before_the_wake_word_is_not_talking() -> None:
+    clock = FakeClock()
+    gate = WakeGate(kws=FakeKeywordSpotter(), clock=clock)
+
+    for _ in range(10):
+        gate.process(_pcm(3000))
+        clock.advance(0.06)
+
+    assert gate.user_speaking is False
+
+
+def test_speech_hangover_comes_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("STACKCHAN_USER_SPEECH_HANGOVER_S", "1.5")
+
+    gate = create_wake_gate_from_env(kws=FakeKeywordSpotter())
+
+    assert gate.user_speech_hangover_s == 1.5

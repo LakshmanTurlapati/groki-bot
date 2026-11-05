@@ -483,7 +483,7 @@ constexpr const char* kTag = "stackchan";
                 head_pet_restore_pending = false;
                 speech.stop();
 
-                // Holding the top of the head = being petted: the aora shy face (averted eyes, blush, floating hearts).
+                // Holding the top of the head = being petted: the shy face (closed arches glancing away, blush, floating heart).
                 // Petting shows shyness, not plain happiness.
                 head_pet_overlay_cmd = g_state->request_face_overlay(avatar::Expression::Affection, 0);
                 balloon_in_flight.store(true, std::memory_order_release);

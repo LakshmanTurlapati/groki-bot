@@ -90,6 +90,10 @@ enum class ConversationEventType : std::uint8_t {
     HeadPose,
     HeadTrackingModeChanged,
     HeadTrack,
+    // Gateway `activity` message: Grok Bot run state for the avatar. `text`
+    // carries the state name ("idle" clears), `activity_ttl_ms` the lifetime
+    // (0 = per-state default).
+    BotActivity,
     // Backend warned that the current connection will be terminated soon
     // (Gemini Live `goAway` message — currently fires near the 15-min audio
     // session cap, but the server may send it at any time). The application
@@ -127,6 +131,7 @@ struct ConversationEvent {
     std::uint16_t head_speed{0};
     HeadTrackingMode head_tracking_mode{HeadTrackingMode::Off};
     HeadTrackingCommand head_tracking_command;
+    std::uint32_t activity_ttl_ms{0}; // for BotActivity
     // `esp_timer_get_time()` at emit, in microseconds. Used by the conv-task
     // to measure event-queue latency (`now_us() - emit_us`) when diagnosing
     // audio pipeline stalls. 0 if the producer didn't set it.

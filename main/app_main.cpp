@@ -824,7 +824,8 @@ extern "C" void app_main()
     }
     // NeoPixel animation task. Driven by SharedState (led_mode / led_color /
     // led_brightness). Only spun up when the board actually has a strip
-    // (CoreS3 = GPIO9, AtomNyan = GPIO38; both surface a NekomimiLedStrip).
+    // (CoreS3 = GPIO9 cat ears, mirrored onto the M5 base's 12 PY32 LEDs;
+    // AtomNyan = GPIO38).
     if (auto* strip = board.led_strip(); strip != nullptr && !kLedTaskDisabledForDebug) {
         g_led_args = new stackchan::app::LedTaskArgs{g_state, strip};
         stackchan::app::start_led_task(*g_led_args);

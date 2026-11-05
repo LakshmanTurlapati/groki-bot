@@ -22,6 +22,8 @@ inline std::optional<HeadTrackingMode> parse_head_tracking_mode(const cJSON* roo
         return HeadTrackingMode::Tracking;
     if (std::strcmp(mode->valuestring, "conversation") == 0)
         return HeadTrackingMode::Conversation;
+    if (std::strcmp(mode->valuestring, "engaged") == 0)
+        return HeadTrackingMode::Engaged;
     return {};
 }
 

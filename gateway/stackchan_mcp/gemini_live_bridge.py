@@ -38,6 +38,7 @@ from .gbot_brain import tool_bot
 
 
 from .voice_output_queue import VoiceOutputQueue
+from .wake_gate import DEFAULT_CONVERSATION_IDLE_S, conversation_idle_timeout_from_env
 from .voice_tools import (  # noqa: F401 - retain the established declarations/constants API
     VoiceToolExecutor,
     ToolMetadata,
@@ -182,7 +183,7 @@ DEFAULT_SYSTEM_INSTRUCTION = default_system_instruction(
 # ~1000x lighter than 24 kHz PCM), which pairs with STACKCHAN_GEMINI_TTS=edge.
 DEFAULT_MODEL = os.getenv("STACKCHAN_GEMINI_MODEL", "gemini-3.8-live")
 DEFAULT_VOICE = os.getenv("STACKCHAN_GEMINI_VOICE", "Kore")
-CONVERSATION_IDLE_TIMEOUT_S = 8.0
+CONVERSATION_IDLE_TIMEOUT_S = DEFAULT_CONVERSATION_IDLE_S
 DEFAULT_CTX_TRIGGER_TOKENS = 25_000
 DEFAULT_CTX_TARGET_TOKENS = 8_000
 DEFAULT_VAD_SILENCE_MS = 650
@@ -436,7 +437,7 @@ class GeminiLiveBridge(VoiceToolExecutor):
         reconnect_on_close: bool = True,
         reconnect_initial_backoff_s: float = 1.0,
         reconnect_max_backoff_s: float = 30.0,
-        conversation_idle_timeout_s: float = CONVERSATION_IDLE_TIMEOUT_S,
+        conversation_idle_timeout_s: float | None = None,
         debug_status: DebugStatus | None = None,
         on_session_dead: TurnCompleteCallback | None = None,
         reconnect_audio_ttl_s: float | None = None,
@@ -477,7 +478,12 @@ class GeminiLiveBridge(VoiceToolExecutor):
         self._reconnect_on_close = reconnect_on_close
         self._reconnect_initial_backoff_s = reconnect_initial_backoff_s
         self._reconnect_max_backoff_s = reconnect_max_backoff_s
-        self._conversation_idle_timeout_s = conversation_idle_timeout_s
+        # STACKCHAN_CONVERSATION_IDLE_S (default 8 s; 0 disables) unless set explicitly.
+        self._conversation_idle_timeout_s = (
+            conversation_idle_timeout_from_env()
+            if conversation_idle_timeout_s is None
+            else conversation_idle_timeout_s
+        )
         self._silence_timeout_task: asyncio.Task[None] | None = None
         self._silence_generation = 0
         # Lifecycle counter; increments each time a fresh Gemini Live socket

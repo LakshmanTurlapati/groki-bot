@@ -398,7 +398,7 @@ int main() {
     {
         BytecodeBuilder b;
         b.code(PUSH_VAR);
-        b.code(0xFE); // >= Var::RingBase + kRingVarCount
+        b.code(0xFE); // >= Var::ParamBase + kParamVarCount
         b.code(RET);
         b.add_fn(0, 0, 0);
         auto rr = run_program(b.build(0));

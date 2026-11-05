@@ -470,6 +470,10 @@ void register_mcp_sinks()
         g_state->note_face_activity();
     });
 
+    stackchan::wifi_config::set_mcp_activity_sink([](std::string_view state, std::uint32_t ttl_ms) {
+        return g_state != nullptr && g_state->request_bot_activity(state, ttl_ms);
+    });
+
     stackchan::wifi_config::set_mcp_balloon_sink([](std::string_view text, std::uint32_t hold_ms) {
         if (g_state == nullptr)
             return;

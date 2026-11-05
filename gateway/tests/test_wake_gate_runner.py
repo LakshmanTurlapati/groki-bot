@@ -274,3 +274,58 @@ async def test_native_failure_tracebacks_do_not_move_destruction_to_event_loop(f
         assert calls[0][1] == calls[1][1] != threading.get_ident()
     finally:
         await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_open_and_extend_run_on_the_native_thread_and_update_the_snapshot():
+    changes = []
+    runner = WakeGateRunner(lambda: WakeGate(kws=Spotter()), on_change=lambda r: changes.append(r.state))
+    await runner.start()
+    try:
+        assert await runner.extend() is False
+        assert not runner.is_listening
+        assert await runner.open() is True
+        assert runner.is_listening and changes[-1] == "LISTENING"
+        assert await runner.open() is False
+        assert await runner.extend() is True
+        assert await runner.close() is True
+        assert await runner.extend() is False
+        assert not runner.is_listening
+    finally:
+        await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_open_is_refused_when_disabled_unavailable_or_stopped():
+    disabled = WakeGateRunner(lambda: None)
+    await disabled.start()
+    assert await disabled.open() is False
+    await disabled.stop()
+
+    def missing_model():
+        raise WakeWordUnavailable("model missing")
+
+    unavailable = WakeGateRunner(missing_model)
+    await unavailable.start()
+    assert await unavailable.open() is False
+    await unavailable.stop()
+
+    stopped = WakeGateRunner(lambda: WakeGate(kws=Spotter()))
+    await stopped.start()
+    await stopped.stop()
+    assert await stopped.open() is False
+
+
+@pytest.mark.asyncio
+async def test_snapshot_reports_the_user_talking_until_the_window_closes():
+    runner = WakeGateRunner(lambda: WakeGate(kws=Spotter([True])))
+    try:
+        await runner.start()
+        assert runner.snapshot.user_speaking is False
+        await runner.process(b"wake")
+        assert runner.snapshot.is_listening
+        assert runner.snapshot.user_speaking is True
+        await runner.close()
+        assert runner.snapshot.user_speaking is False
+    finally:
+        await runner.stop()

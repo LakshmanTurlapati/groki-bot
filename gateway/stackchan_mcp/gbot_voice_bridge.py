@@ -23,6 +23,7 @@ import aiohttp
 
 from .voice_output_queue import VoiceOutputQueue
 from .gbot_native_channel import NativeVoiceChannel
+from .wake_gate import conversation_idle_timeout_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,8 @@ class GbotVoiceBridge:
         tool_executor_factory=None,
         tool_extensions=(),
         local_tools=True,
-        conversation_idle_timeout_s=8.0,
+        conversation_idle_timeout_s=None,
+        on_proactive_response=None,
     ):
         self.url = validate_bridge_url(
             bridge_url
@@ -171,7 +173,14 @@ class GbotVoiceBridge:
         self._response_requested = False
         self._pending_updates = []
         self._idle_task = None
-        self._conversation_idle_timeout_s = conversation_idle_timeout_s
+        self._conversation_idle_timeout_s = (
+            conversation_idle_timeout_from_env()
+            if conversation_idle_timeout_s is None
+            else conversation_idle_timeout_s
+        )
+        # Called when a native update (desktop result or typed message) makes
+        # the model answer on its own, so the proxy can listen for a reply.
+        self._on_proactive_response = on_proactive_response
         self.audio_bytes_by_response = {}
         self.response_started_at = {}
         self._on_audio = on_audio
@@ -808,6 +817,8 @@ class GbotVoiceBridge:
             logger.info("Grok voice response state=created trigger=%s", trigger)
             self.response_started_at[self._active_response] = time.monotonic()
             self._drop_until_response = False
+            if trigger == "async_update" and self._on_proactive_response is not None:
+                self._on_proactive_response()
         elif kind == "input_audio_buffer.speech_started":
             self._response_progress_at = None
             self.metrics["speech_starts"] += 1

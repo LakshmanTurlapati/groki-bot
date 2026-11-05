@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from stackchan_mcp.usb_transport import CAMERA_FRAME_BYTES, UsbTransport
+from stackchan_mcp.usb_transport import CAMERA_FRAME_BYTES, CameraSleeping, UsbTransport
 from stackchan_mcp.usb_voice_framer import (
     AUDIO_UPLINK, CAMERA_CHUNK, UsbVoiceFrame, UsbVoiceLine, UsbVoiceStreamParser, encode_usb_voice_frame,
 )
@@ -90,6 +90,20 @@ async def test_invalid_camera_transfers_never_produce_a_frame(fault):
     with pytest.raises(ConnectionError, match="Invalid USB camera"):
         await transport.capture_camera_frame(timeout_s=1)
     assert not transport._pending and not transport._camera_buffers
+
+
+@pytest.mark.asyncio
+async def test_camera_sleeping_is_distinct_from_busy_and_failure():
+    transport = connected_transport()
+
+    async def sleeping(request):
+        rid = json.loads(request.decode().split("$MCP: ", 1)[1])["id"]
+        result = {"busy": False, "sleeping": True, "error": "sleeping"}
+        transport._dispatch_response_line('$MCP: ' + json.dumps({"id": rid, "result": result}))
+
+    transport._write_locked = sleeping
+    with pytest.raises(CameraSleeping):
+        await transport.capture_camera_frame(timeout_s=1)
 
 
 @pytest.mark.asyncio

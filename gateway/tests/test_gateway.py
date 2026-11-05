@@ -203,6 +203,26 @@ async def test_track_endpoint_returns_400_on_invalid_json():
 # --- face tracking: talk/listen arbitration ----------------------------------
 
 
+def test_voice_proxy_reports_user_speech_only_inside_an_open_window(monkeypatch):
+    import time
+    from stackchan_mcp.wake_gate import WakeGateState
+    from stackchan_mcp.wake_gate_runner import WakeGateSnapshot
+
+    monkeypatch.setenv("STACKCHAN_USB_DISABLE", "1")
+    proxy = Gateway()._make_voice_proxy()
+    soon = time.monotonic() + 5
+    assert proxy.user_speaking is False
+    proxy._wake_gate = WakeGateSnapshot(WakeGateState.LISTENING, speech_until=soon)
+    assert proxy.user_speaking is True
+    proxy._tts_active = True
+    assert proxy.user_speaking is False
+    proxy._tts_active = False
+    proxy._wake_gate = WakeGateSnapshot(WakeGateState.LISTENING, speech_until=time.monotonic() - 1)
+    assert proxy.user_speaking is False
+    proxy._wake_gate = WakeGateSnapshot(WakeGateState.DORMANT, speech_until=soon)
+    assert proxy.user_speaking is False
+
+
 @pytest.mark.asyncio
 async def test_gateway_voice_signal_arbitrates_tracking(monkeypatch):
     from types import SimpleNamespace
@@ -910,6 +930,28 @@ async def test_gemini_say_routes_to_active_proxy_speak_text():
 
     assert result["ok"] is True
     assert calls["args"] == ("搞定了", "hook-notify", [], None)
+
+
+@pytest.mark.asyncio
+async def test_gemini_say_listens_for_an_answer_unless_told_not_to():
+    from types import SimpleNamespace
+
+    gw = Gateway()
+    calls = []
+
+    async def fake_speak_text(text, *, session_id, prompt_audio_frames, emotion=None, listen_after=False):
+        calls.append(listen_after)
+        return {"ok": True}
+
+    gw.esp32 = SimpleNamespace(
+        connection=SimpleNamespace(cloud_proxy=SimpleNamespace(speak_text=fake_speak_text))
+    )
+
+    await gw._handle_external_local_tool("gemini_say", {"text": "done"})
+    await gw._handle_external_local_tool("gemini_say", {"text": "done", "listen": False})
+    await gw._handle_external_local_tool("gemini_say", {"text": "done", "listen": True})
+
+    assert calls == [True, False, True]
 
 
 @pytest.mark.asyncio

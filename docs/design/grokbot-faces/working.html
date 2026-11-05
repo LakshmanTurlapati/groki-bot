@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grok Bot Working face</title>
+<style>
+body{margin:0;background:#121212}
+@keyframes bodyWork{0%,10%{transform:translate(-13px,-2px)}18%,30%{transform:translate(0,0)}38%,50%{transform:translate(5px,0)}58%,70%{transform:translate(-7px,0)}78%,90%{transform:translate(-12px,-2px)}100%{transform:translate(-13px,-2px)}}
+@keyframes eyesWork{0%,10%{transform:translate(-45px,4px) rotate(-12deg)}18%,30%{transform:translate(-36px,4px) rotate(6deg)}38%,50%{transform:translate(-22px,7px) rotate(16deg)}58%,70%{transform:translate(-54px,30px) rotate(-30deg)}78%,90%{transform:translate(-12px,32px) rotate(-24deg)}100%{transform:translate(-45px,4px) rotate(-12deg)}}
+@keyframes blink{0%,88%{transform:scaleY(1)}92%,95%{transform:scaleY(0.25)}99%,100%{transform:scaleY(1)}}
+.pos{animation:bodyWork 4s ease-in-out infinite}
+.eyes{animation:eyesWork 4s ease-out infinite;transform-origin:50% 50%}
+.eye{animation:blink 3.6s linear infinite;transform-origin:50% 50%}
+</style>
+<style>html,body{height:100%}body{display:grid;place-items:center;margin:0}</style>
+</head>
+<body>
+<div style="width: 320px; height: 240px; background: #121212; position: relative; overflow: hidden">
+<div class="pos" style="position: absolute; left: 61.5px; top: 52.5px; width: 197px; height: 135px">
+<div style="position: absolute; left: 0; top: 0; width: 197px; height: 135px; transform: rotate(-15deg)">
+<div style="position: absolute; left: 0; top: 0; width: 197px; height: 135px; border-radius: 67.5px; background: #777777; overflow: hidden">
+<div class="eyes" style="position: absolute; left: 86.5px; top: 13.5px; width: 90px; height: 70px">
+<div style="position: absolute; left: 3px; top: 4px; width: 32px; height: 62px; transform: rotate(-11deg)">
+<div class="eye" style="width: 32px; height: 62px; border-radius: 16px; background: #121212"></div>
+</div>
+<div style="position: absolute; left: 55.5px; top: 4px; width: 32px; height: 62px; transform: rotate(-11deg)">
+<div class="eye" style="width: 32px; height: 62px; border-radius: 16px; background: #121212"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>

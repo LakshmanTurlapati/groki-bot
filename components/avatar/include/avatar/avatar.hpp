@@ -33,8 +33,15 @@ public:
     // `hold_ms == 0` keeps the overlay until `clear_overlay`.
     void set_overlay(Expression overlay, std::uint32_t hold_ms) noexcept;
     void clear_overlay() noexcept;
+    // Grok Bot run state (Thinking / Working / Waiting / Blocked / Done /
+    // Failed / Listening). `ttl_ms == 0` uses the per-state default; see
+    // ExpressionController::default_activity_ttl_ms.
+    void set_activity(Expression state, std::uint32_t ttl_ms) noexcept;
+    void clear_activity() noexcept;
     void note_activity() noexcept;
     Expression resolve_expression(std::uint32_t now_ms) noexcept;
+    // True while idle decay has the robot asleep; see ExpressionController::asleep.
+    bool is_asleep() const noexcept;
     void set_mouth_open(float ratio) noexcept;
     void set_gaze(float horizontal, float vertical) noexcept;
     void set_palette(const Palette& palette) noexcept;
@@ -63,10 +70,12 @@ public:
     // returning from the on-device UI. No-op cost on the buffered strategy.
     void request_full_repaint() noexcept;
 
-    // aora eye-ring wiring: the caller (render task) owns a frame buffer of kRingVarCount floats
-    // and fills it with the compositor (main/aora_face.hpp) before tick() every frame; this only
-    // stores a non-owning pointer, which the VM reads through the Var::RingBase range. nullptr reads 0.
-    void set_eye_ring_buffer(const float* buffer) noexcept;
+    // Face-parameter wiring: the caller (render task) owns a frame buffer of
+    // kParamVarCount floats and fills it with the compositor
+    // (main/pill_face.hpp) before tick() every frame; this only stores a
+    // non-owning pointer, which the VM reads through the Var::ParamBase
+    // range. nullptr reads 0.
+    void set_face_param_buffer(const float* buffer) noexcept;
     // The compositor reads the current expression weights / blink / gaze (values from the previous tick).
     const DrawContext& draw_context() const noexcept;
 

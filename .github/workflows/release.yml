@@ -200,9 +200,8 @@ jobs:
           cp "build-$BOARD/flash_args" "$outdir/"
           cp README*.md LICENSE THIRD_PARTY_NOTICES.md "$outdir/"
           cp -R docs "$outdir/"
-          mkdir -p "$outdir/gateway" "$outdir/third_party"
+          mkdir -p "$outdir/gateway"
           cp gateway/README*.md gateway/LICENSE "$outdir/gateway/"
-          cp -R third_party/emotion-ball "$outdir/third_party/"
           echo "=== Firmware size for $BOARD ==="
           python3 -m esp_idf_size "build-$BOARD/stackchan_idf.map" --format=text || true
           (cd "$outdir" && zip -r "../../firmware-${VERSION}-${BOARD}.zip" .)
@@ -289,10 +288,10 @@ jobs:
             Open <https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/settings.html>, connect over Bluetooth, open the firmware update section and either pick this release or select `stackchan_idf.bin` from the ZIP.
 
             ## Gateway and Grok Bot
-            The gateway for your computer (Gemini Live voice with a "Hi Grok" wake word, MCP server for Claude, optional hand-off to a Grok Bot agent) is not a download here: it runs from source in `gateway/`. See https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/gateway/README.md and https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/architecture.md.
+            The gateway for your computer (Gemini Live voice with a "Hey Grok" wake word, MCP server for Claude, optional hand-off to a Grok Bot agent) is not a download here: it runs from source in `gateway/`. See https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/gateway/README.md and https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/architecture.md.
 
             ## Licenses
-            Third-party licenses and attributions: <https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/licenses.html>. The eye-ring data is used under the Emotion Ball Community License, which allows non-commercial use only; see `third_party/emotion-ball/` in the repository.
+            Third-party licenses and attributions: <https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/licenses.html>.
 
             ## Build information
             - **ESP-IDF**: v5.5.4

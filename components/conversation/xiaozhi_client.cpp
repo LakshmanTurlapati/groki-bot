@@ -26,6 +26,7 @@
 #include "esp_audio_types.h"
 #include "esp_opus_dec.h"
 #include "esp_opus_enc.h"
+#include "conversation/activity_control.hpp"
 #include "conversation/control_dispatch.hpp"
 #include "conversation/tracking_control.hpp"
 #include "conversation/usb_voice_port.hpp"
@@ -613,6 +614,10 @@ private:
         cJSON_AddBoolToObject(features, "mcp", false);
         cJSON_AddBoolToObject(features, "camera_tracking_v1", config_.camera_tracking_v1);
         cJSON_AddBoolToObject(features, "camera_tracking_v2", config_.camera_tracking_v1);
+        // Accepts head_tracking mode "engaged": tracking continues through a conversation.
+        cJSON_AddBoolToObject(features, "camera_tracking_engaged_v1", config_.camera_tracking_v1);
+        // Accepts {"type":"activity"} Grok Bot run states for the face.
+        cJSON_AddBoolToObject(features, "bot_activity_v1", true);
         cJSON* ap = cJSON_AddObjectToObject(root, "audio_params");
         cJSON_AddStringToObject(ap, "format", "opus");
         cJSON_AddNumberToObject(ap, "sample_rate", kUplinkSampleRate);
@@ -719,6 +724,14 @@ private:
                             ev.head_tracking_command = std::move(*command);
                             emit(ev);
                         }
+                    }
+                } else if (std::strcmp(type, "activity") == 0) {
+                    if (auto activity = parse_bot_activity(root)) {
+                        ConversationEvent ev{};
+                        ev.type = ConversationEventType::BotActivity;
+                        ev.text = std::move(activity->state);
+                        ev.activity_ttl_ms = activity->ttl_ms;
+                        emit(ev);
                     }
                 } else if (std::strcmp(type, "tts") == 0) {
                     handle_tts(root);

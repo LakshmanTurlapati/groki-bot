@@ -304,6 +304,7 @@ public:
             // Control permission changes must not wait behind streamed audio.
             if (ev.type == conv::ConversationEventType::HeadTrackingModeChanged) {
                 const auto mode = ev.head_tracking_mode == conv::HeadTrackingMode::Tracking ? TrackingMode::Tracking
+                                  : ev.head_tracking_mode == conv::HeadTrackingMode::Engaged ? TrackingMode::Engaged
                                   : ev.head_tracking_mode == conv::HeadTrackingMode::Conversation
                                       ? TrackingMode::Conversation
                                       : TrackingMode::Off;
@@ -314,6 +315,14 @@ public:
                 const auto& command = ev.head_tracking_command;
                 (void)state_.servo.submit(HeadControl::Operation::Apply, now_ms(), command.frame_id,
                                           {command.delta_yaw, command.delta_pitch}, command.release);
+                return;
+            }
+            // Grok Bot run state: one atomic store, so the face changes
+            // without waiting behind queued reply audio.
+            if (ev.type == conv::ConversationEventType::BotActivity) {
+                if (!state_.request_bot_activity(std::string_view{ev.text}, ev.activity_ttl_ms)) {
+                    ESP_LOGW(kTag, "unknown activity state: %s", ev.text.c_str());
+                }
                 return;
             }
             if (ev.type == conv::ConversationEventType::HeadPose)
@@ -1145,6 +1154,7 @@ private:
         }
         case conv::ConversationEventType::HeadTrackingModeChanged:
         case conv::ConversationEventType::HeadTrack:
+        case conv::ConversationEventType::BotActivity:
             break; // Handled directly by the transport callback.
 
         case conv::ConversationEventType::LedColor: {

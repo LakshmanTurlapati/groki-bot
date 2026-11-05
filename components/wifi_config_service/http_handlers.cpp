@@ -145,6 +145,7 @@ CameraRegSink g_camera_reg_sink = nullptr;
 McpSayKanaSink g_mcp_say_sink = nullptr;
 LtConfigSink g_lt_config_sink = nullptr;
 McpExpressionSink g_mcp_expression_sink = nullptr;
+McpActivitySink g_mcp_activity_sink = nullptr;
 McpBalloonSink g_mcp_balloon_sink = nullptr;
 bool g_servo_range_mode = false;
 // Active /mcp/* bearer. NVS-resolved at register_handlers() time; empty →
@@ -1139,6 +1140,9 @@ esp_err_t handle_camera_capture_get(httpd_req_t* req)
         return send_error(req, "400 Bad Request", "tracking requires an ordinary optical frame");
     }
     if (!sink(options, frame, w, h, format, metadata) || frame.empty()) {
+        if (metadata.tracking_sleeping) {
+            return send_error(req, "423 Locked", "robot is asleep");
+        }
         if (metadata.tracking_busy) {
             return send_error(req, "409 Conflict", "tracking paused, moving, busy, or capture superseded");
         }
@@ -1547,6 +1551,28 @@ esp_err_t handle_mcp_expression_post(httpd_req_t* req)
     return send_json(req, R"({"ok":true})");
 }
 
+esp_err_t handle_mcp_activity_post(httpd_req_t* req)
+{
+    if (mcp_gate(req) != ESP_OK) return ESP_OK;
+    std::string state;
+    if (read_body_str(req, state, kMaxMcpExpressionBytes) != ESP_OK) return ESP_OK;
+    // ttl_ms is optional, in the query string: ?ttl_ms=120000
+    std::uint32_t ttl_ms = 0;
+    char q[64];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(q, "ttl_ms", val, sizeof(val)) == ESP_OK) {
+            ttl_ms = static_cast<std::uint32_t>(std::strtoul(val, nullptr, 10));
+        }
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    McpActivitySink sink = g_mcp_activity_sink;
+    xSemaphoreGive(g_mutex);
+    if (!sink) return send_error(req, "503 Service Unavailable", "activity sink not registered");
+    if (!sink(state, ttl_ms)) return send_error(req, "400 Bad Request", "unknown activity state");
+    return send_json(req, R"({"ok":true})");
+}
+
 esp_err_t handle_mcp_balloon_post(httpd_req_t* req)
 {
     if (mcp_gate(req) != ESP_OK) return ESP_OK;
@@ -1896,6 +1922,7 @@ void register_handlers(httpd_handle_t server, const config::DeviceConfig& curren
     // CONFIG_MCP_API_TOKEN keeps these handlers registered but they 404.
     add(server, "/mcp/say",              HTTP_POST, handle_mcp_say_post);
     add(server, "/mcp/expression",       HTTP_POST, handle_mcp_expression_post);
+    add(server, "/mcp/activity",         HTTP_POST, handle_mcp_activity_post);
     add(server, "/mcp/balloon",          HTTP_POST, handle_mcp_balloon_post);
     add(server, "/mcp/state",            HTTP_GET,  handle_mcp_state_get);
     add(server, "/mcp/events",           HTTP_GET,  handle_mcp_events_get);
@@ -2117,6 +2144,13 @@ void set_mcp_expression_sink(McpExpressionSink sink)
     if (g_mutex == nullptr) { g_mcp_expression_sink = std::move(sink); return; }
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_mcp_expression_sink = std::move(sink);
+    xSemaphoreGive(g_mutex);
+}
+void set_mcp_activity_sink(McpActivitySink sink)
+{
+    if (g_mutex == nullptr) { g_mcp_activity_sink = std::move(sink); return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    g_mcp_activity_sink = std::move(sink);
     xSemaphoreGive(g_mutex);
 }
 void set_mcp_balloon_sink(McpBalloonSink sink)

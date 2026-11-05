@@ -12,12 +12,16 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#include "aora_face.hpp"
 #include "avatar/avatar.hpp"
 #include "avatar/canvas.hpp"
 #include "avatar/canvas_m5gfx.hpp"
+#include "avatar_vm/opcodes.hpp"
 #include "face_config.hpp"
+#include "pill_face.hpp"
 #include "screens.hpp"
+
+static_assert(stackchan::app::pill::kOutFloats <= stackchan::avatar_vm::kParamVarCount,
+              "pill face display list must fit the VM parameter window");
 
 namespace stackchan::app {
 
@@ -106,6 +110,8 @@ void render_task_entry(void* arg) {
     std::int32_t last_mood = -1;
     std::int32_t last_voice = -1;
     std::uint32_t last_overlay_cmd = 0;
+    std::uint32_t last_activity_cmd = 0;
+    bool last_asleep = false;
     std::uint32_t last_activity_seq = 0;
     std::uint32_t last_balloon_version = 0;
     std::uint32_t last_face_config_version = 0;
@@ -190,7 +196,7 @@ void render_task_entry(void* arg) {
         // BtnB / shaking / MCP / the LLM persists, so a leftover test value would hold the face forever.
         // After 45 s without a new write it falls back to Neutral; during a conversation the LLM keeps
         // changing the mood, which refreshes the timestamp. Idle decay (bored after 2 min, sleepy after
-        // 5 min) takes over after the fallback as usual.
+        // 10 min) takes over after the fallback as usual.
         std::int32_t mood = args.state->face.expression.load(std::memory_order_relaxed);
         static std::uint32_t mood_set_ms = 0;
         constexpr std::uint32_t kMoodAutoClearMs = 45'000;
@@ -223,6 +229,18 @@ void render_task_entry(void* arg) {
                 avatar.set_overlay(expr, hold);
             }
         }
+        // Grok Bot run state, same one-word handoff as the overlay.
+        const std::uint32_t activity_cmd = args.state->face.activity_command.load(std::memory_order_acquire);
+        if (activity_cmd != last_activity_cmd) {
+            last_activity_cmd = activity_cmd;
+            if ((activity_cmd & app::SharedState::kOverlayValidBit) == 0) {
+                avatar.clear_activity();
+            } else {
+                const auto expr = static_cast<avatar::Expression>((activity_cmd >> 15) & 0xFF);
+                const auto ttl_ms = (activity_cmd & 0x7FFFu) * app::SharedState::kActivityTtlUnitMs;
+                avatar.set_activity(expr, ttl_ms);
+            }
+        }
         const std::uint32_t activity_seq = args.state->face.activity_seq.load(std::memory_order_relaxed);
         if (activity_seq != last_activity_seq) {
             last_activity_seq = activity_seq;
@@ -249,14 +267,22 @@ void render_task_entry(void* arg) {
 
         // Grok (Avatar VM) is the only face.
         {
-            // aora eye rings: build this frame's eye shape from the expression weights after the previous
-            // tick (one frame late, not visible); the VM reads them through the Var::RingBase range.
-            static float ring_buf[aora::kOutFloats];
-            aora::compose(avatar.draw_context(), now_ms, ring_buf);
-            avatar.set_eye_ring_buffer(ring_buf);
+            // Pill face: build this frame's display list from the expression weights after the previous
+            // tick (one frame late, not visible); the VM reads it through the Var::ParamBase range. The
+            // buffer spans the whole window so an uploaded face reading past the list sees zeros.
+            static float face_params[avatar_vm::kParamVarCount];
+            static pill::Compositor compositor;
+            compositor.compose(avatar.draw_context(), now_ms, face_params);
+            avatar.set_face_param_buffer(face_params);
             // avatar.tick() opens the frame (begin_frame) and draws the face;
             // overlays compose into the same frame; end_frame() presents.
             avatar.tick(now_ms, canvas);
+        }
+
+        // Idle decay owns sleep: the head rests and camera tracking stops with it.
+        if (const bool asleep = avatar.is_asleep(); asleep != last_asleep) {
+            last_asleep = asleep;
+            args.state->servo.set_sleeping(asleep);
         }
 
         // The battery gauge is not drawn on the face: the value is still
